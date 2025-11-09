@@ -1,0 +1,50 @@
+# Playdate compiled output
+*.pdx
+*.pdz
+*.pdi
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Build artifacts
+build/
+dist/
+out/
+bin/
+
+# Debugging and monitoring
+.sentry-native/
+*.log
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# Package managers (if any)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+

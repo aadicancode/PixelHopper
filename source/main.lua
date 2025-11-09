@@ -250,26 +250,18 @@ local function getSpawnInterval()
 	return math.max(500, arrowSpawnInterval - speedup) -- min 500ms
 end
 
--- === High score storage (simple file) ===
-local HS_FILENAME = "poorbunny_highscore.txt"
+-- === High score storage (using Playdate datastore) ===
 local highScore = 0
 
 local function loadHighScore()
-	local fh = io.open(HS_FILENAME, "r")
-	if fh then
-		local contents = fh:read("*a")
-		fh:close()
-		local n = tonumber(contents)
-		if n then highScore = n end
+	local data = playdate.datastore.read("highScore")
+	if data and type(data) == "number" then
+		highScore = data
 	end
 end
 
 local function saveHighScore()
-	local fh = io.open(HS_FILENAME, "w")
-	if fh then
-		fh:write(tostring(highScore))
-		fh:close()
-	end
+	playdate.datastore.write(highScore, "highScore")
 end
 
 loadHighScore()
@@ -296,6 +288,22 @@ local function spawnRandomArrow()
 	local margin = 12
 	local x = math.random(margin, SCREEN_W - margin)
 	spawnArrowAt(x, 2 + math.random() * 2.5)
+end
+
+-- convenience sprite-setters (defined before use)
+local function setStandingSprite()
+	if facing == "right" then bunny:setImage(imgRight)
+	else bunny:setImage(imgLeft) end
+end
+
+local function setHopSprite()
+	if facing == "right" then bunny:setImage(imgHopRight)
+	else bunny:setImage(imgHopLeft) end
+end
+
+local function setFallSprite()
+	if facing == "right" then bunny:setImage(imgHopDownRight)
+	else bunny:setImage(imgHopDownLeft) end
 end
 
 -- reset everything for restart
@@ -347,22 +355,6 @@ local function die()
 	end
 
 	gameState = "dead"
-end
-
--- convenience sprite-setters
-local function setStandingSprite()
-	if facing == "right" then bunny:setImage(imgRight)
-	else bunny:setImage(imgLeft) end
-end
-
-local function setHopSprite()
-	if facing == "right" then bunny:setImage(imgHopRight)
-	else bunny:setImage(imgHopLeft) end
-end
-
-local function setFallSprite()
-	if facing == "right" then bunny:setImage(imgHopDownRight)
-	else bunny:setImage(imgHopDownLeft) end
 end
 
 -- === Main Loop ===

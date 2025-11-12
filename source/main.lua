@@ -29,6 +29,17 @@ local whiteCarrotSpawnDelay = 0 -- delay before next white carrot spawns
 -- === Enemy (arrows) table ===
 local arrows = {}
 
+-- === Obstacle tables ===
+local saws = {}
+local wreckingBalls = {}
+local cannons = {}
+local spikeBalls = {}
+local cannonProjectiles = {}
+
+-- === Obstacle spawn control ===
+local lastObstacleSpawn = 0
+local obstacleSpawnInterval = 0 -- will be set to random 13-17 seconds
+
 -- === Particle system (from earlier) ===
 local Particle = {}
 Particle.__index = Particle
@@ -337,6 +348,16 @@ local function getSpawnInterval()
 	return math.max(500, arrowSpawnInterval - speedup) -- min 500ms
 end
 
+-- === Obstacle Speed Variables (configurable) ===
+local SAW_SPEED = 2.0
+local SAW_ROTATION_SPEED = 5.0 -- degrees per frame
+local WRECKING_BALL_ROTATION_SPEED = 0.05 -- radians per frame
+local WRECKING_BALL_CHAIN_LENGTH = 50
+local SPIKE_BALL_VERTICAL_SPEED = 2.0
+local SPIKE_BALL_DIAGONAL_SPEED = 2.5
+local CANNON_PROJECTILE_SPEED = 3.0
+local CANNON_FIRE_INTERVAL = 2000 -- milliseconds between shots
+
 -- === High score storage (using Playdate datastore) ===
 local highScore = 0
 local highTime = 0.0  -- Time from the same run as high score
@@ -402,6 +423,602 @@ local function spawnRandomArrow()
 	end
 end
 
+-------------------------------------------------------
+-- === Obstacle Flashing Effect System ===
+-------------------------------------------------------
+local function startFlashingEffect(obstacle, sprite)
+	obstacle.isFlashing = true
+	obstacle.flashStartTime = playdate.getCurrentTimeMilliseconds()
+	obstacle.flashDuration = 2000 -- 2 seconds
+	obstacle.flashVisible = true
+	
+	-- Create timer to toggle visibility
+	obstacle.flashTimer = playdate.timer.new(200, function()
+		if obstacle and not obstacle.removed then
+			obstacle.flashVisible = not obstacle.flashVisible
+			if sprite then
+				if obstacle.flashVisible then
+					sprite:setVisible(true)
+				else
+					sprite:setVisible(false)
+				end
+			end
+		end
+	end)
+	obstacle.flashTimer.repeats = true
+end
+
+local function updateFlashingEffect(obstacle, sprite)
+	if obstacle.isFlashing then
+		local now = playdate.getCurrentTimeMilliseconds()
+		if now - obstacle.flashStartTime >= obstacle.flashDuration then
+			-- Flash complete, make obstacle active
+			obstacle.isFlashing = false
+			if obstacle.flashTimer then
+				obstacle.flashTimer:remove()
+				obstacle.flashTimer = nil
+			end
+			if sprite then
+				sprite:setVisible(true)
+			end
+		end
+	end
+end
+
+-------------------------------------------------------
+-- === Obstacle Creation Functions ===
+-------------------------------------------------------
+
+-- Create a saw obstacle
+local function createSaw(x, y)
+	local sawSize = 24
+	local img = safeLoad("images/saw.png")
+	if not img then
+		-- Placeholder: create a simple saw image
+		img = gfx.image.new(sawSize, sawSize)
+		gfx.pushContext(img)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillCircleAtPoint(sawSize/2, sawSize/2, sawSize/2)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillCircleAtPoint(sawSize/2, sawSize/2, sawSize/2 - 2)
+			-- Draw teeth
+			for i = 0, 7 do
+				local angle = i * math.pi / 4
+				local x1 = sawSize/2 + math.cos(angle) * (sawSize/2 - 2)
+				local y1 = sawSize/2 + math.sin(angle) * (sawSize/2 - 2)
+				local x2 = sawSize/2 + math.cos(angle) * (sawSize/2)
+				local y2 = sawSize/2 + math.sin(angle) * (sawSize/2)
+				gfx.setColor(gfx.kColorBlack)
+				gfx.drawLine(x1, y1, x2, y2)
+			end
+		gfx.popContext()
+	end
+	
+	local sprite = gfx.sprite.new(img)
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(x, y)
+	sprite:add()
+	
+	-- Set initial direction (random left or right on ground)
+	local direction = (math.random() > 0.5) and 1 or -1
+	
+	local saw = {
+		sprite = sprite,
+		state = "ground", -- "ground", "wallUp", "top", "wallDown"
+		x = x,
+		y = y,
+		direction = direction, -- horizontal direction: 1 = right, -1 = left
+		wallSide = nil, -- which wall was hit: "left" or "right"
+		rotation = 0, -- rotation angle in degrees
+		isFlashing = false,
+		removed = false
+	}
+	
+	startFlashingEffect(saw, sprite)
+	return saw
+end
+
+-- Create a wrecking ball
+local function createWreckingBall(anchorX, anchorY)
+	local ballSize = 20
+	-- Always create placeholder (no image loading for wrecking balls)
+	local img = gfx.image.new(ballSize, ballSize)
+	gfx.pushContext(img)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.fillCircleAtPoint(ballSize/2, ballSize/2, ballSize/2)
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillCircleAtPoint(ballSize/2, ballSize/2, ballSize/2 - 2)
+	gfx.popContext()
+	
+	local sprite = gfx.sprite.new(img)
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(anchorX, anchorY + WRECKING_BALL_CHAIN_LENGTH)
+	sprite:add()
+	
+	local ball = {
+		sprite = sprite,
+		anchorX = anchorX,
+		anchorY = anchorY,
+		angle = math.random() * math.pi * 2,
+		isFlashing = false,
+		removed = false
+	}
+	
+	startFlashingEffect(ball, sprite)
+	return ball
+end
+
+-- Create a cannon
+local function createCannon(x, y, facing)
+	-- facing: "left" or "right"
+	local cannonWidth = 24
+	local cannonHeight = 16
+	local img = safeLoad("images/cannon.png")
+	if not img then
+		-- Placeholder: create a simple cannon image
+		img = gfx.image.new(cannonWidth, cannonHeight)
+		gfx.pushContext(img)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(0, 0, cannonWidth, cannonHeight)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillRect(2, 2, cannonWidth - 4, cannonHeight - 4)
+			-- Cannon barrel
+			if facing == "right" then
+				gfx.setColor(gfx.kColorBlack)
+				gfx.fillRect(cannonWidth - 8, cannonHeight/2 - 2, 8, 4)
+			else
+				gfx.setColor(gfx.kColorBlack)
+				gfx.fillRect(0, cannonHeight/2 - 2, 8, 4)
+			end
+		gfx.popContext()
+		if facing == "left" then
+			img = img:scaledImage(-1, 1)
+		end
+	else
+		-- Flip the loaded image if facing left
+		if facing == "left" then
+			img = img:scaledImage(-1, 1)
+		end
+	end
+	
+	local sprite = gfx.sprite.new(img)
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(x, y)
+	sprite:add()
+	
+	local cannon = {
+		sprite = sprite,
+		x = x,
+		y = y,
+		facing = facing,
+		lastFireTime = playdate.getCurrentTimeMilliseconds(),
+		isFlashing = false,
+		removed = false
+	}
+	
+	startFlashingEffect(cannon, sprite)
+	return cannon
+end
+
+-- Create a spike ball
+local function createSpikeBall(type, x, y)
+	-- type: "vertical", "diagonal1", "diagonal2"
+	local ballSize = 18
+	local img = safeLoad("images/spikeball.png")
+	if not img then
+		-- Placeholder: create a simple spiky ball image
+		img = gfx.image.new(ballSize, ballSize)
+		gfx.pushContext(img)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillCircleAtPoint(ballSize/2, ballSize/2, ballSize/2)
+			-- Draw spikes
+			for i = 0, 7 do
+				local angle = i * math.pi / 4
+				local x1 = ballSize/2 + math.cos(angle) * (ballSize/2 - 2)
+				local y1 = ballSize/2 + math.sin(angle) * (ballSize/2 - 2)
+				local x2 = ballSize/2 + math.cos(angle) * (ballSize/2 + 2)
+				local y2 = ballSize/2 + math.sin(angle) * (ballSize/2 + 2)
+				gfx.setColor(gfx.kColorWhite)
+				gfx.drawLine(x1, y1, x2, y2)
+			end
+		gfx.popContext()
+	end
+	
+	local sprite = gfx.sprite.new(img)
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(x, y)
+	sprite:add()
+	
+	local spikeBall = {
+		sprite = sprite,
+		type = type,
+		x = x,
+		y = y,
+		vx = 0,
+		vy = 0,
+		startX = x,
+		startY = y,
+		isFlashing = false,
+		removed = false
+	}
+	
+	-- Set initial velocity based on type
+	if type == "vertical" then
+		spikeBall.vy = SPIKE_BALL_VERTICAL_SPEED
+	elseif type == "diagonal1" then
+		spikeBall.vx = SPIKE_BALL_DIAGONAL_SPEED
+		spikeBall.vy = -SPIKE_BALL_DIAGONAL_SPEED
+	elseif type == "diagonal2" then
+		spikeBall.vx = -SPIKE_BALL_DIAGONAL_SPEED
+		spikeBall.vy = -SPIKE_BALL_DIAGONAL_SPEED
+	end
+	
+	startFlashingEffect(spikeBall, sprite)
+	return spikeBall
+end
+
+-- Create a cannon projectile
+local function createCannonProjectile(x, y, direction)
+	-- direction: 1 for right, -1 for left
+	local projSize = 8
+	local img = safeLoad("images/cannonball.png")
+	if not img then
+		-- Placeholder: create a simple projectile image
+		img = gfx.image.new(projSize, projSize)
+		gfx.pushContext(img)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillCircleAtPoint(projSize/2, projSize/2, projSize/2)
+		gfx.popContext()
+	end
+	
+	local sprite = gfx.sprite.new(img)
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(x, y)
+	sprite:add()
+	
+	local projectile = {
+		sprite = sprite,
+		x = x,
+		y = y,
+		vx = direction * CANNON_PROJECTILE_SPEED,
+		vy = 0,
+		removed = false
+	}
+	
+	return projectile
+end
+
+-------------------------------------------------------
+-- === Obstacle Update Functions ===
+-------------------------------------------------------
+
+-- Update saw movement
+local function updateSaw(saw)
+	if saw.removed or not saw.sprite then return end
+	
+	updateFlashingEffect(saw, saw.sprite)
+	
+	-- Always rotate the saw
+	saw.rotation = (saw.rotation + SAW_ROTATION_SPEED) % 360
+	saw.sprite:setRotation(saw.rotation)
+	
+	-- Only move if not flashing
+	if not saw.isFlashing then
+		local sawRadius = 12 -- Half of saw size (24/2)
+		
+		if saw.state == "ground" then
+			-- Move horizontally on ground
+			saw.y = GROUND_TOP - sawRadius -- Lock y position to ground
+			saw.x += saw.direction * SAW_SPEED
+			saw.sprite:moveTo(saw.x, saw.y)
+			
+			-- Check if hit a wall, then go up
+			if saw.x <= LEFT_BOUND + sawRadius then
+				saw.x = LEFT_BOUND + sawRadius
+				saw.wallSide = "left"
+				saw.state = "wallUp"
+			elseif saw.x >= RIGHT_BOUND - sawRadius then
+				saw.x = RIGHT_BOUND - sawRadius
+				saw.wallSide = "right"
+				saw.state = "wallUp"
+			end
+		elseif saw.state == "wallUp" then
+			-- Move vertically upward along the wall
+			saw.y -= SAW_SPEED
+			saw.sprite:moveTo(saw.x, saw.y)
+			
+			-- Check if hit the top, then move horizontally
+			if saw.y <= 20 + sawRadius then
+				saw.y = 20 + sawRadius
+				saw.state = "top"
+				-- Move in opposite direction from ground movement
+				saw.direction = -saw.direction
+			end
+		elseif saw.state == "top" then
+			-- Move horizontally along the top
+			saw.y = 20 + sawRadius -- Lock y position to top
+			saw.x += saw.direction * SAW_SPEED
+			saw.sprite:moveTo(saw.x, saw.y)
+			
+			-- Check if hit a wall, then go down
+			if saw.x <= LEFT_BOUND + sawRadius then
+				saw.x = LEFT_BOUND + sawRadius
+				saw.wallSide = "left"
+				saw.state = "wallDown"
+			elseif saw.x >= RIGHT_BOUND - sawRadius then
+				saw.x = RIGHT_BOUND - sawRadius
+				saw.wallSide = "right"
+				saw.state = "wallDown"
+			end
+		elseif saw.state == "wallDown" then
+			-- Move vertically downward along the wall
+			saw.y += SAW_SPEED
+			saw.sprite:moveTo(saw.x, saw.y)
+			
+			-- Check if hit the ground, then move horizontally
+			if saw.y >= GROUND_TOP - sawRadius then
+				saw.y = GROUND_TOP - sawRadius
+				saw.state = "ground"
+				-- Move in opposite direction from top movement
+				saw.direction = -saw.direction
+			end
+		end
+	end
+end
+
+-- Update wrecking ball rotation
+local function updateWreckingBall(ball)
+	if ball.removed or not ball.sprite then return end
+	
+	updateFlashingEffect(ball, ball.sprite)
+	
+	-- Only rotate if not flashing
+	if not ball.isFlashing then
+		ball.angle += WRECKING_BALL_ROTATION_SPEED
+		local x = ball.anchorX + math.cos(ball.angle) * WRECKING_BALL_CHAIN_LENGTH
+		local y = ball.anchorY + math.sin(ball.angle) * WRECKING_BALL_CHAIN_LENGTH
+		ball.sprite:moveTo(x, y)
+	end
+end
+
+-- Update cannon (fire projectiles)
+local function updateCannon(cannon)
+	if cannon.removed or not cannon.sprite then return end
+	
+	updateFlashingEffect(cannon, cannon.sprite)
+	
+	-- Only fire if not flashing
+	if not cannon.isFlashing then
+		local now = playdate.getCurrentTimeMilliseconds()
+		if now - cannon.lastFireTime >= CANNON_FIRE_INTERVAL then
+			cannon.lastFireTime = now
+			local direction = (cannon.facing == "right") and 1 or -1
+			local projectile = createCannonProjectile(cannon.x, cannon.y, direction)
+			table.insert(cannonProjectiles, projectile)
+		end
+	end
+end
+
+-- Update spike ball movement
+local function updateSpikeBall(spikeBall)
+	if spikeBall.removed or not spikeBall.sprite then return end
+	
+	updateFlashingEffect(spikeBall, spikeBall.sprite)
+	
+	-- Only move if not flashing
+	if not spikeBall.isFlashing then
+		if spikeBall.type == "vertical" then
+			-- Move vertically, bounce at top/bottom
+			spikeBall.y += spikeBall.vy
+			spikeBall.sprite:moveTo(spikeBall.x, spikeBall.y)
+			
+			if spikeBall.y <= 20 then
+				spikeBall.y = 20
+				spikeBall.vy = SPIKE_BALL_VERTICAL_SPEED
+			elseif spikeBall.y >= GROUND_TOP - 9 then
+				spikeBall.y = GROUND_TOP - 9
+				spikeBall.vy = -SPIKE_BALL_VERTICAL_SPEED
+			end
+		else
+			-- Move diagonally, bounce off screen edges
+			spikeBall.x += spikeBall.vx
+			spikeBall.y += spikeBall.vy
+			spikeBall.sprite:moveTo(spikeBall.x, spikeBall.y)
+			
+			-- Bounce off horizontal edges
+			if spikeBall.x <= LEFT_BOUND + 9 then
+				spikeBall.x = LEFT_BOUND + 9
+				spikeBall.vx = -spikeBall.vx
+			elseif spikeBall.x >= RIGHT_BOUND - 9 then
+				spikeBall.x = RIGHT_BOUND - 9
+				spikeBall.vx = -spikeBall.vx
+			end
+			
+			-- Bounce off vertical edges
+			if spikeBall.y <= 20 then
+				spikeBall.y = 20
+				spikeBall.vy = -spikeBall.vy
+			elseif spikeBall.y >= GROUND_TOP - 9 then
+				spikeBall.y = GROUND_TOP - 9
+				spikeBall.vy = -spikeBall.vy
+			end
+		end
+	end
+end
+
+-- Update cannon projectiles
+local function updateCannonProjectile(projectile)
+	if projectile.removed or not projectile.sprite then return end
+	
+	projectile.x += projectile.vx
+	projectile.sprite:moveTo(projectile.x, projectile.y)
+	
+	-- Remove if off screen
+	if projectile.x < -20 or projectile.x > SCREEN_W + 20 then
+		projectile.sprite:remove()
+		projectile.removed = true
+	end
+end
+
+-------------------------------------------------------
+-- === Obstacle Spawn System ===
+-------------------------------------------------------
+
+-- Define cannon positions (6 total: 2 per level, left and right)
+local CANNON_POSITIONS = {
+	{ x = LEFT_BOUND, y = 160, facing = "right" },  -- Ground left
+	{ x = RIGHT_BOUND, y = 160, facing = "left" },  -- Ground right
+	{ x = LEFT_BOUND, y = 110, facing = "right" },  -- Middle left
+	{ x = RIGHT_BOUND, y = 110, facing = "left" },  -- Middle right
+	{ x = LEFT_BOUND, y = 60, facing = "right" },   -- Top left
+	{ x = RIGHT_BOUND, y = 60, facing = "left" },   -- Top right
+}
+
+-- Define spike ball types
+local SPIKE_BALL_TYPES = {
+	{ type = "vertical", x = SCREEN_W / 2, y = 120 },
+	{ type = "diagonal1", x = SCREEN_W / 2, y = 120 },
+	{ type = "diagonal2", x = SCREEN_W / 2, y = 120 },
+}
+
+-- Spawn a saw
+local function spawnSaw()
+	if #saws >= 3 then return end -- Max 3 saws
+	
+	-- Always spawn on ground at random position
+	local sawRadius = 12 -- Half of saw size (24/2)
+	local x = math.random(LEFT_BOUND + sawRadius, RIGHT_BOUND - sawRadius)
+	local y = GROUND_TOP - sawRadius
+	
+	local saw = createSaw(x, y)
+	if saw then
+		table.insert(saws, saw)
+	end
+end
+
+-- Spawn a wrecking ball
+local function spawnWreckingBall()
+	if #wreckingBalls >= 3 then return end -- Max 3 wrecking balls
+	
+	-- Find a platform to attach to (simplified - check if platform is actually occupied)
+	local availablePlatforms = {}
+	for _, plat in ipairs(platforms) do
+		local px, py = plat:getPosition()
+		-- Check if this platform is already used by an active wrecking ball
+		local used = false
+		for _, ball in ipairs(wreckingBalls) do
+			if ball and ball.sprite and not ball.removed then
+				if math.abs(ball.anchorX - px) < 5 and math.abs(ball.anchorY - py) < 5 then
+					used = true
+					break
+				end
+			end
+		end
+		if not used then
+			table.insert(availablePlatforms, { x = px, y = py - 5 })
+		end
+	end
+	
+	-- If no specific platforms available, pick a random one anyway (shouldn't happen, but safety)
+	if #availablePlatforms > 0 then
+		local platform = availablePlatforms[math.random(1, #availablePlatforms)]
+		local ball = createWreckingBall(platform.x, platform.y)
+		if ball then
+			table.insert(wreckingBalls, ball)
+		end
+	elseif #platforms > 0 then
+		-- Fallback: use any random platform
+		local plat = platforms[math.random(1, #platforms)]
+		local px, py = plat:getPosition()
+		local ball = createWreckingBall(px, py - 5)
+		if ball then
+			table.insert(wreckingBalls, ball)
+		end
+	end
+end
+
+-- Spawn a cannon
+local function spawnCannon()
+	if #cannons >= 6 then return end -- Max 6 cannons
+	
+	-- Find available cannon position (simplified - just check if position is already occupied)
+	local availablePositions = {}
+	for i, pos in ipairs(CANNON_POSITIONS) do
+		local used = false
+		for _, cannon in ipairs(cannons) do
+			if cannon and cannon.sprite and not cannon.removed then
+				if math.abs(cannon.x - pos.x) < 5 and math.abs(cannon.y - pos.y) < 5 then
+					used = true
+					break
+				end
+			end
+		end
+		if not used then
+			table.insert(availablePositions, pos)
+		end
+	end
+	
+	-- If no specific positions available, just pick a random one from all positions
+	-- This ensures we can always spawn if under the limit
+	if #availablePositions > 0 then
+		local pos = availablePositions[math.random(1, #availablePositions)]
+		local cannon = createCannon(pos.x, pos.y, pos.facing)
+		if cannon then
+			table.insert(cannons, cannon)
+		end
+	else
+		-- Fallback: pick any random position if all are "used" (shouldn't happen, but safety check)
+		local pos = CANNON_POSITIONS[math.random(1, #CANNON_POSITIONS)]
+		local cannon = createCannon(pos.x, pos.y, pos.facing)
+		if cannon then
+			table.insert(cannons, cannon)
+		end
+	end
+end
+
+-- Spawn a spike ball
+local function spawnSpikeBall()
+	if #spikeBalls >= 3 then return end -- Max 3 spike balls
+	
+	-- Allow multiple spike balls of the same type - just pick a random type
+	local spikeType = SPIKE_BALL_TYPES[math.random(1, #SPIKE_BALL_TYPES)]
+	local ball = createSpikeBall(spikeType.type, spikeType.x, spikeType.y)
+	if ball then
+		table.insert(spikeBalls, ball)
+	end
+end
+
+-- Unified obstacle spawn system
+local function trySpawnObstacle()
+	local now = playdate.getCurrentTimeMilliseconds()
+	
+	-- Check if it's time to spawn
+	if now - lastObstacleSpawn >= obstacleSpawnInterval then
+		lastObstacleSpawn = now
+		obstacleSpawnInterval = 13000 + math.random(4000) -- 13-17 seconds
+		
+		-- Build list of available obstacle types
+		local availableTypes = {}
+		if #saws < 3 then table.insert(availableTypes, "saw") end
+		if #wreckingBalls < 3 then table.insert(availableTypes, "wreckingBall") end
+		if #cannons < 6 then table.insert(availableTypes, "cannon") end
+		if #spikeBalls < 3 then table.insert(availableTypes, "spikeBall") end
+		
+		if #availableTypes > 0 then
+			local obstacleType = availableTypes[math.random(1, #availableTypes)]
+			if obstacleType == "saw" then
+				spawnSaw()
+			elseif obstacleType == "wreckingBall" then
+				spawnWreckingBall()
+			elseif obstacleType == "cannon" then
+				spawnCannon()
+			elseif obstacleType == "spikeBall" then
+				spawnSpikeBall()
+			end
+		end
+	end
+end
+
 -- convenience sprite-setters (defined before use)
 local function setStandingSprite()
 	if facing == "right" then bunny:setImage(imgRight)
@@ -445,9 +1062,57 @@ local function restartGame()
 	-- remove white carrot
 	removeWhiteCarrot()
 
+	-- remove obstacles
+	-- remove saws
+	for i = #saws, 1, -1 do
+		local saw = saws[i]
+		if saw then
+			if saw.flashTimer then saw.flashTimer:remove() end
+			if saw.sprite then saw.sprite:remove() end
+		end
+		table.remove(saws, i)
+	end
+	-- remove wrecking balls
+	for i = #wreckingBalls, 1, -1 do
+		local ball = wreckingBalls[i]
+		if ball then
+			if ball.flashTimer then ball.flashTimer:remove() end
+			if ball.sprite then ball.sprite:remove() end
+		end
+		table.remove(wreckingBalls, i)
+	end
+	-- remove cannons
+	for i = #cannons, 1, -1 do
+		local cannon = cannons[i]
+		if cannon then
+			if cannon.flashTimer then cannon.flashTimer:remove() end
+			if cannon.sprite then cannon.sprite:remove() end
+		end
+		table.remove(cannons, i)
+	end
+	-- remove spike balls
+	for i = #spikeBalls, 1, -1 do
+		local spikeBall = spikeBalls[i]
+		if spikeBall then
+			if spikeBall.flashTimer then spikeBall.flashTimer:remove() end
+			if spikeBall.sprite then spikeBall.sprite:remove() end
+		end
+		table.remove(spikeBalls, i)
+	end
+	-- remove cannon projectiles
+	for i = #cannonProjectiles, 1, -1 do
+		local projectile = cannonProjectiles[i]
+		if projectile and projectile.sprite then
+			projectile.sprite:remove()
+		end
+		table.remove(cannonProjectiles, i)
+	end
+
 	carrotCount = 0
 	startTimeMs = playdate.getCurrentTimeMilliseconds()
 	lastArrowSpawn = startTimeMs
+	lastObstacleSpawn = 0 -- Reset to trigger immediate spawn
+	obstacleSpawnInterval = 0 -- Will be set on first spawn
 	gameState = "playing"
 	menuSelection = 1
 	yVelocity = 0
@@ -801,6 +1466,151 @@ function playdate.update()
 				table.remove(arrows, i)
 			end
 		end
+
+		---------------------------------------------------------------------
+		-- Obstacle spawn system
+		---------------------------------------------------------------------
+		if lastObstacleSpawn == 0 then
+			-- Initialize spawn timer and spawn immediately on first frame
+			lastObstacleSpawn = playdate.getCurrentTimeMilliseconds()
+			obstacleSpawnInterval = 13000 + math.random(4000) -- 13-17 seconds
+			-- Spawn first obstacle immediately
+			local availableTypes = {}
+			if #saws < 3 then table.insert(availableTypes, "saw") end
+			if #wreckingBalls < 3 then table.insert(availableTypes, "wreckingBall") end
+			if #cannons < 6 then table.insert(availableTypes, "cannon") end
+			if #spikeBalls < 3 then table.insert(availableTypes, "spikeBall") end
+			
+			if #availableTypes > 0 then
+				local obstacleType = availableTypes[math.random(1, #availableTypes)]
+				if obstacleType == "saw" then
+					spawnSaw()
+				elseif obstacleType == "wreckingBall" then
+					spawnWreckingBall()
+				elseif obstacleType == "cannon" then
+					spawnCannon()
+				elseif obstacleType == "spikeBall" then
+					spawnSpikeBall()
+				end
+			end
+		end
+		trySpawnObstacle()
+
+		---------------------------------------------------------------------
+		-- Update obstacles
+		---------------------------------------------------------------------
+		-- Update saws
+		for i = #saws, 1, -1 do
+			local saw = saws[i]
+			if saw and not saw.removed then
+				updateSaw(saw)
+			else
+				table.remove(saws, i)
+			end
+		end
+
+		-- Update wrecking balls
+		for i = #wreckingBalls, 1, -1 do
+			local ball = wreckingBalls[i]
+			if ball and not ball.removed then
+				updateWreckingBall(ball)
+			else
+				table.remove(wreckingBalls, i)
+			end
+		end
+
+		-- Update cannons
+		for i = #cannons, 1, -1 do
+			local cannon = cannons[i]
+			if cannon and not cannon.removed then
+				updateCannon(cannon)
+			else
+				table.remove(cannons, i)
+			end
+		end
+
+		-- Update spike balls
+		for i = #spikeBalls, 1, -1 do
+			local spikeBall = spikeBalls[i]
+			if spikeBall and not spikeBall.removed then
+				updateSpikeBall(spikeBall)
+			else
+				table.remove(spikeBalls, i)
+			end
+		end
+
+		-- Update cannon projectiles
+		for i = #cannonProjectiles, 1, -1 do
+			local projectile = cannonProjectiles[i]
+			if projectile and not projectile.removed then
+				updateCannonProjectile(projectile)
+				if projectile.removed then
+					table.remove(cannonProjectiles, i)
+				end
+			else
+				table.remove(cannonProjectiles, i)
+			end
+		end
+
+		---------------------------------------------------------------------
+		-- Obstacle collision detection
+		---------------------------------------------------------------------
+		local bx, by, bwB, bhB = bunny:getBounds()
+		local bunnyRect = playdate.geometry.rect.new(bx, by, bwB, bhB)
+
+		-- Check collision with saws
+		for i = #saws, 1, -1 do
+			local saw = saws[i]
+			if saw and saw.sprite and not saw.isFlashing then
+				local sx, sy, sw, sh = saw.sprite:getBounds()
+				local sawRect = playdate.geometry.rect.new(sx, sy, sw, sh)
+				if bunnyRect:intersects(sawRect) then
+					die()
+					break
+				end
+			end
+		end
+
+		-- Check collision with wrecking balls
+		for i = #wreckingBalls, 1, -1 do
+			local ball = wreckingBalls[i]
+			if ball and ball.sprite and not ball.isFlashing then
+				local wx, wy, ww, wh = ball.sprite:getBounds()
+				local ballRect = playdate.geometry.rect.new(wx, wy, ww, wh)
+				if bunnyRect:intersects(ballRect) then
+					die()
+					break
+				end
+			end
+		end
+
+		-- Check collision with spike balls
+		for i = #spikeBalls, 1, -1 do
+			local spikeBall = spikeBalls[i]
+			if spikeBall and spikeBall.sprite and not spikeBall.isFlashing then
+				local spx, spy, spw, sph = spikeBall.sprite:getBounds()
+				local spikeRect = playdate.geometry.rect.new(spx, spy, spw, sph)
+				if bunnyRect:intersects(spikeRect) then
+					die()
+					break
+				end
+			end
+		end
+
+		-- Check collision with cannon projectiles
+		for i = #cannonProjectiles, 1, -1 do
+			local projectile = cannonProjectiles[i]
+			if projectile and projectile.sprite then
+				local px, py, pw, ph = projectile.sprite:getBounds()
+				local projRect = playdate.geometry.rect.new(px, py, pw, ph)
+				if bunnyRect:intersects(projRect) then
+					projectile.sprite:remove()
+					table.remove(cannonProjectiles, i)
+					die()
+					break
+				end
+			end
+		end
 	end -- end playing-block
 
 	-- Update particles every frame
@@ -813,6 +1623,56 @@ function playdate.update()
 	-- Update sprites & timers
 	gfx.sprite.update()
 	playdate.timer.updateTimers()
+
+	-- Draw obstacle chains and outlines (only during gameplay)
+	if gameState == "playing" then
+		-- Draw chains for wrecking balls
+		for _, ball in ipairs(wreckingBalls) do
+			if ball and ball.sprite and not ball.removed then
+				local bx, by = ball.sprite:getPosition()
+				gfx.setColor(gfx.kColorBlack)
+				gfx.setLineWidth(1)
+				gfx.drawLine(ball.anchorX, ball.anchorY, bx, by)
+			end
+		end
+
+		-- Draw outlines for flashing obstacles
+		for _, saw in ipairs(saws) do
+			if saw and saw.sprite and saw.isFlashing then
+				local sx, sy, sw, sh = saw.sprite:getBounds()
+				gfx.setColor(gfx.kColorBlack)
+				gfx.setLineWidth(2)
+				gfx.drawRect(sx, sy, sw, sh)
+			end
+		end
+
+		for _, ball in ipairs(wreckingBalls) do
+			if ball and ball.sprite and ball.isFlashing then
+				local wx, wy, ww, wh = ball.sprite:getBounds()
+				gfx.setColor(gfx.kColorBlack)
+				gfx.setLineWidth(2)
+				gfx.drawRect(wx, wy, ww, wh)
+			end
+		end
+
+		for _, cannon in ipairs(cannons) do
+			if cannon and cannon.sprite and cannon.isFlashing then
+				local cx, cy, cw, ch = cannon.sprite:getBounds()
+				gfx.setColor(gfx.kColorBlack)
+				gfx.setLineWidth(2)
+				gfx.drawRect(cx, cy, cw, ch)
+			end
+		end
+
+		for _, spikeBall in ipairs(spikeBalls) do
+			if spikeBall and spikeBall.sprite and spikeBall.isFlashing then
+				local spx, spy, spw, sph = spikeBall.sprite:getBounds()
+				gfx.setColor(gfx.kColorBlack)
+				gfx.setLineWidth(2)
+				gfx.drawRect(spx, spy, spw, sph)
+			end
+		end
+	end
 
 	-- draw timer and carrot count (only during gameplay)
 	if gameState == "playing" then

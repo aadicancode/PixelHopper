@@ -4,6 +4,21 @@ import "CoreLibs/timer"
 
 local gfx = playdate.graphics
 
+-- === Sound Effects ===
+local jumpSound = nil
+
+-- Load sound effects (gracefully handle missing files)
+local function loadSounds()
+	-- Try to load jump sound
+	local jumpSample = playdate.sound.sample.new("sounds/jump")
+	if jumpSample then
+		jumpSound = playdate.sound.sampleplayer.new(jumpSample)
+	end
+end
+
+-- Initialize sounds
+loadSounds()
+
 -- === Screen and Ground Settings ===
 local SCREEN_W, SCREEN_H = 400, 240
 local GROUND_WIDTH = 400
@@ -390,6 +405,92 @@ end
 loadHighScore()
 loadHighTime()
 
+-- === Local Leaderboard (persisted using Playdate datastore) ===
+local leaderboard = {} -- Array of {score, time, playerName, rank, date}
+local leaderboardScrollOffset = 0
+local maxLeaderboardEntries = 10
+
+-- Load local leaderboard from datastore
+local function loadLocalLeaderboard()
+	local data = playdate.datastore.read("localLeaderboard")
+	if data and type(data) == "table" then
+		leaderboard = data
+		-- Ensure all entries have required fields
+		for i, entry in ipairs(leaderboard) do
+			entry.rank = i
+			entry.playerName = entry.playerName or "Player"
+			entry.score = entry.score or 0
+			entry.time = entry.time or 0
+			entry.date = entry.date or 0
+		end
+	else
+		leaderboard = {}
+	end
+end
+
+-- Save local leaderboard to datastore
+local function saveLocalLeaderboard()
+	playdate.datastore.write(leaderboard, "localLeaderboard")
+end
+
+-- Add a score to the local leaderboard
+local function addScoreToLocalLeaderboard(score, time)
+	-- Create new entry
+	local entry = {
+		score = score,
+		time = time,
+		playerName = "Player",
+		date = playdate.getSecondsSinceEpoch()
+	}
+	
+	-- Insert into leaderboard (sorted by score, descending)
+	table.insert(leaderboard, entry)
+	
+	-- Sort by score (descending), then by time (ascending for same score)
+	table.sort(leaderboard, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		else
+			return a.time < b.time
+		end
+	end)
+	
+	-- Keep only top entries
+	while #leaderboard > maxLeaderboardEntries do
+		table.remove(leaderboard)
+	end
+	
+	-- Update ranks
+	for i = 1, #leaderboard do
+		leaderboard[i].rank = i
+	end
+	
+	-- Save to disk
+	saveLocalLeaderboard()
+end
+
+-- Initialize: Load local leaderboard on startup
+loadLocalLeaderboard()
+
+-- Sync highScore and highTime with leaderboard (in case leaderboard has better scores)
+local function syncHighScoreFromLeaderboard()
+	if #leaderboard > 0 then
+		local topEntry = leaderboard[1]
+		if topEntry and topEntry.score then
+			-- Update if leaderboard has a higher score, or if highScore is 0
+			if topEntry.score > highScore or highScore == 0 then
+				highScore = topEntry.score
+				highTime = topEntry.time or 0
+				saveHighScore()
+				saveHighTime()
+			end
+		end
+	end
+end
+
+-- Sync on startup
+syncHighScoreFromLeaderboard()
+
 -- === Multiplayer Leaderboard (using Playdate Scoreboard API) ===
 -- Note: To use leaderboards, you need to:
 -- 1. Set up scoreboards in the Playdate Developer Portal for your game
@@ -398,11 +499,8 @@ loadHighTime()
 -- 4. Leaderboards will only work when the game is published/connected to Playdate servers
 local LEADERBOARD_ENABLED = true -- Set to false to disable leaderboard features
 
-local leaderboard = {} -- Array of {score, time, playerName, rank}
 local leaderboardLoading = false
 local leaderboardError = nil
-local leaderboardScrollOffset = 0
-local maxLeaderboardEntries = 10
 
 -- Board IDs - these should match the board IDs configured in your pdxinfo
 local SCORE_BOARD_ID = "pixelhopper_scores" -- Main score leaderboard
@@ -417,13 +515,13 @@ local function submitScoreToLeaderboard(score, time)
 		if error then
 			-- Handle error silently or log it
 		else
-			-- Success - refresh leaderboard
-			fetchLeaderboard()
+			-- Success - refresh leaderboard (if using online leaderboard)
+			-- fetchLeaderboard()
 		end
 	end)
 end
 
--- Fetch leaderboard from Playdate servers
+-- Fetch leaderboard from Playdate servers (optional, for online leaderboard)
 local function fetchLeaderboard()
 	if not LEADERBOARD_ENABLED then return end
 	
@@ -435,22 +533,10 @@ local function fetchLeaderboard()
 		leaderboardLoading = false
 		if error then
 			leaderboardError = "Failed to load"
-			leaderboard = {}
+			-- Don't clear local leaderboard on error
 		elseif scores then
-			-- Convert Playdate scoreboard format to our format
-			leaderboard = {}
-			for i, scoreEntry in ipairs(scores) do
-				table.insert(leaderboard, {
-					rank = i,
-					playerName = scoreEntry.playerName or "Player",
-					score = scoreEntry.value or 0,
-					time = 0 -- Time not stored in scoreboard, would need separate board
-				})
-			end
-			leaderboardError = nil
-		else
-			leaderboard = {}
-			leaderboardError = nil
+			-- Optionally merge with local leaderboard or replace
+			-- For now, we'll keep using local leaderboard
 		end
 	end)
 end
@@ -657,7 +743,7 @@ local function createCannon(x, y, facing)
 	end
 	
 	local sprite = gfx.sprite.new(img)
-	sprite:setCenter(0.5, 0.5)
+	sprite:setCenter(0.5, 1.0)  -- Center horizontally, bottom vertically (so it sits on platform)
 	sprite:moveTo(x, y)
 	sprite:add()
 	
@@ -749,6 +835,9 @@ local function createCannonProjectile(x, y, direction)
 	
 	local sprite = gfx.sprite.new(img)
 	sprite:setCenter(0.5, 0.5)
+	-- Set collision rectangle (slightly smaller than visual for better feel)
+	local collisionSize = projSize * 0.8
+	sprite:setCollideRect(-collisionSize/2, -collisionSize/2, collisionSize, collisionSize)
 	sprite:moveTo(x, y)
 	sprite:add()
 	
@@ -869,7 +958,11 @@ local function updateCannon(cannon)
 		if now - cannon.lastFireTime >= CANNON_FIRE_INTERVAL then
 			cannon.lastFireTime = now
 			local direction = (cannon.facing == "right") and 1 or -1
-			local projectile = createCannonProjectile(cannon.x, cannon.y, direction)
+			-- Calculate barrel position: cannon is 24 wide, barrel extends 8 pixels from edge
+			-- Cannon center is at (cannon.x, cannon.y - 8) since it's bottom-aligned
+			local barrelX = cannon.x + (direction * 16)  -- 12 (half width) + 4 (half barrel) = 16
+			local barrelY = cannon.y - 8  -- Middle of cannon (cannon is 16 tall, bottom-aligned)
+			local projectile = createCannonProjectile(barrelX, barrelY, direction)
 			table.insert(cannonProjectiles, projectile)
 		end
 	end
@@ -1215,15 +1308,14 @@ local function die()
 	lastScore = carrotCount
 	lastTime = elapsedTime
 
-	-- update high score and high time together (from same run)
-	if carrotCount > highScore then
-		highScore = carrotCount
-		highTime = elapsedTime  -- Save time from the same run as high score
-		saveHighScore()
-		saveHighTime()
-	end
+	-- Add score to local leaderboard (always, so player can see their history)
+	addScoreToLocalLeaderboard(carrotCount, elapsedTime)
 
-	-- Submit score to multiplayer leaderboard
+	-- Sync high score and high time with leaderboard (leaderboard is now sorted)
+	-- This ensures highScore/highTime always match the top leaderboard entry
+	syncHighScoreFromLeaderboard()
+
+	-- Submit score to multiplayer leaderboard (optional, for online leaderboard)
 	submitScoreToLeaderboard(carrotCount, elapsedTime)
 
 	gameState = "dead"
@@ -1267,13 +1359,8 @@ function playdate.update()
 			if menuSelection == 1 then
 				restartGame()
 			elseif menuSelection == 2 then
-				-- View leaderboard
-				if LEADERBOARD_ENABLED then
-					fetchLeaderboard()
-					gameState = "leaderboard"
-				else
-					gameState = "menu"
-				end
+				-- View leaderboard (local leaderboard is always available)
+				gameState = "leaderboard"
 			end
 		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			restartGame()
@@ -1333,6 +1420,10 @@ function playdate.update()
 			isOnGround = false
 			jumpPressedTime = 0
 			setHopSprite()
+			-- Play jump sound if available
+			if jumpSound then
+				jumpSound:play()
+			end
 		end
 
 		-- Hold jump
@@ -1745,8 +1836,15 @@ function playdate.update()
 			if projectile and projectile.sprite then
 				-- Skip collision if bunny is standing on a platform
 				if not isBunnyOnPlatform() then
-					local px, py, pw, ph = projectile.sprite:getBounds()
-					local projRect = playdate.geometry.rect.new(px, py, pw, ph)
+					-- Use sprite's actual position and collision rect for accurate collision
+					local px, py = projectile.sprite:getPosition()
+					local collideRect = projectile.sprite:getCollideRect()
+					local projRect = playdate.geometry.rect.new(
+						px + collideRect.x,
+						py + collideRect.y,
+						collideRect.width,
+						collideRect.height
+					)
 					if bunnyRect:intersects(projRect) then
 						projectile.sprite:remove()
 						table.remove(cannonProjectiles, i)
@@ -2032,7 +2130,7 @@ function playdate.update()
 		
 		-- LEADERBOARD option
 		menuY = menuY + lineHeight
-		local leaderboardText = LEADERBOARD_ENABLED and "LEADERBOARD" or "HIGH SCORE"
+		local leaderboardText = "LEADERBOARD"
 		local leaderboardWidth = font:getTextWidth(leaderboardText)
 		if menuSelection == 2 then
 			gfx.setColor(gfx.kColorBlack)
@@ -2089,17 +2187,7 @@ function playdate.update()
 		local lineHeight = 22
 		local maxVisible = 7
 		
-		if leaderboardLoading then
-			gfx.setColor(gfx.kColorBlack)
-			local loadingText = "Loading..."
-			local loadingWidth = font:getTextWidth(loadingText)
-			gfx.drawText(loadingText, SCREEN_W / 2 - loadingWidth / 2, startY + 50)
-		elseif leaderboardError then
-			gfx.setColor(gfx.kColorBlack)
-			local errorText = leaderboardError
-			local errorWidth = font:getTextWidth(errorText)
-			gfx.drawText(errorText, SCREEN_W / 2 - errorWidth / 2, startY + 50)
-		elseif #leaderboard == 0 then
+		if #leaderboard == 0 then
 			gfx.setColor(gfx.kColorBlack)
 			local noDataText = "No scores yet"
 			local noDataWidth = font:getTextWidth(noDataText)

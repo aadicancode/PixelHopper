@@ -332,7 +332,7 @@ local useHopDown = false  -- Track which walking animation to use (hop or hopdow
 local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
-local gameState = "mainmenu" -- "mainmenu" | "playing" | "dead" | "menu"
+local gameState = "mainmenu" -- "mainmenu" | "playing" | "dead" | "menu" | "leaderboard"
 local startTimeMs = playdate.getCurrentTimeMilliseconds()
 local elapsedTime = 0.0
 
@@ -355,6 +355,7 @@ local WRECKING_BALL_ROTATION_SPEED = 0.05 -- radians per frame
 local WRECKING_BALL_CHAIN_LENGTH = 50
 local SPIKE_BALL_VERTICAL_SPEED = 2.0
 local SPIKE_BALL_DIAGONAL_SPEED = 2.5
+local SPIKE_BALL_ROTATION_SPEED = 4.0 -- degrees per frame
 local CANNON_PROJECTILE_SPEED = 3.0
 local CANNON_FIRE_INTERVAL = 2000 -- milliseconds between shots
 
@@ -389,8 +390,73 @@ end
 loadHighScore()
 loadHighTime()
 
+-- === Multiplayer Leaderboard (using Playdate Scoreboard API) ===
+-- Note: To use leaderboards, you need to:
+-- 1. Set up scoreboards in the Playdate Developer Portal for your game
+-- 2. Ensure your game has a valid bundle ID configured
+-- 3. The board ID (SCORE_BOARD_ID) should match the board ID created in the portal
+-- 4. Leaderboards will only work when the game is published/connected to Playdate servers
+local LEADERBOARD_ENABLED = true -- Set to false to disable leaderboard features
+
+local leaderboard = {} -- Array of {score, time, playerName, rank}
+local leaderboardLoading = false
+local leaderboardError = nil
+local leaderboardScrollOffset = 0
+local maxLeaderboardEntries = 10
+
+-- Board IDs - these should match the board IDs configured in your pdxinfo
+local SCORE_BOARD_ID = "pixelhopper_scores" -- Main score leaderboard
+local TIME_BOARD_ID = "pixelhopper_times" -- Time leaderboard (optional)
+
+-- Send score to Playdate leaderboard
+local function submitScoreToLeaderboard(score, time)
+	if not LEADERBOARD_ENABLED then return end
+	
+	-- Submit score to the main scoreboard
+	playdate.scoreboards.addScore(SCORE_BOARD_ID, score, function(error)
+		if error then
+			-- Handle error silently or log it
+		else
+			-- Success - refresh leaderboard
+			fetchLeaderboard()
+		end
+	end)
+end
+
+-- Fetch leaderboard from Playdate servers
+local function fetchLeaderboard()
+	if not LEADERBOARD_ENABLED then return end
+	
+	leaderboardLoading = true
+	leaderboardError = nil
+	
+	-- Get top scores from the scoreboard
+	playdate.scoreboards.getScores(SCORE_BOARD_ID, maxLeaderboardEntries, function(scores, error)
+		leaderboardLoading = false
+		if error then
+			leaderboardError = "Failed to load"
+			leaderboard = {}
+		elseif scores then
+			-- Convert Playdate scoreboard format to our format
+			leaderboard = {}
+			for i, scoreEntry in ipairs(scores) do
+				table.insert(leaderboard, {
+					rank = i,
+					playerName = scoreEntry.playerName or "Player",
+					score = scoreEntry.value or 0,
+					time = 0 -- Time not stored in scoreboard, would need separate board
+				})
+			end
+			leaderboardError = nil
+		else
+			leaderboard = {}
+			leaderboardError = nil
+		end
+	end)
+end
+
 -- === UI / Menu selection for death screen ===
-local menuOptions = { "RESTART", "HIGH SCORE" }
+local menuOptions = { "RESTART", "LEADERBOARD" }
 local menuSelection = 1
 
 -- === Utility: spawn an arrow at x, with vy ===
@@ -496,6 +562,10 @@ local function createSaw(x, y)
 	
 	local sprite = gfx.sprite.new(img)
 	sprite:setCenter(0.5, 0.5)
+	-- Set collision rectangle to match actual saw size (24x24)
+	-- Center the collision rect around the sprite center
+	local collisionSize = sawSize * 0.8 -- Slightly smaller than visual for better feel
+	sprite:setCollideRect(-collisionSize/2, -collisionSize/2, collisionSize, collisionSize)
 	sprite:moveTo(x, y)
 	sprite:add()
 	
@@ -532,14 +602,19 @@ local function createWreckingBall(anchorX, anchorY)
 	
 	local sprite = gfx.sprite.new(img)
 	sprite:setCenter(0.5, 0.5)
-	sprite:moveTo(anchorX, anchorY + WRECKING_BALL_CHAIN_LENGTH)
+	
+	-- Set initial angle first, then position ball at that angle
+	local initialAngle = math.random() * math.pi * 2
+	local initialX = anchorX + math.cos(initialAngle) * WRECKING_BALL_CHAIN_LENGTH
+	local initialY = anchorY + math.sin(initialAngle) * WRECKING_BALL_CHAIN_LENGTH
+	sprite:moveTo(initialX, initialY)
 	sprite:add()
 	
 	local ball = {
 		sprite = sprite,
 		anchorX = anchorX,
 		anchorY = anchorY,
-		angle = math.random() * math.pi * 2,
+		angle = initialAngle,
 		isFlashing = false,
 		removed = false
 	}
@@ -638,6 +713,7 @@ local function createSpikeBall(type, x, y)
 		vy = 0,
 		startX = x,
 		startY = y,
+		rotation = 0, -- rotation angle in degrees
 		isFlashing = false,
 		removed = false
 	}
@@ -804,6 +880,10 @@ local function updateSpikeBall(spikeBall)
 	if spikeBall.removed or not spikeBall.sprite then return end
 	
 	updateFlashingEffect(spikeBall, spikeBall.sprite)
+	
+	-- Always rotate the spikeball
+	spikeBall.rotation = (spikeBall.rotation + SPIKE_BALL_ROTATION_SPEED) % 360
+	spikeBall.sprite:setRotation(spikeBall.rotation)
 	
 	-- Only move if not flashing
 	if not spikeBall.isFlashing then
@@ -1143,6 +1223,9 @@ local function die()
 		saveHighTime()
 	end
 
+	-- Submit score to multiplayer leaderboard
+	submitScoreToLeaderboard(carrotCount, elapsedTime)
+
 	gameState = "dead"
 end
 
@@ -1175,8 +1258,24 @@ function playdate.update()
 			restartGame()
 		end
 	elseif gameState == "dead" then
-		-- Restart on A or B
-		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
+		-- Up/Down to navigate menu, A to select, B to restart
+		if playdate.buttonJustPressed(playdate.kButtonUp) then
+			menuSelection = math.max(1, menuSelection - 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
+			menuSelection = math.min(2, menuSelection + 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonA) then
+			if menuSelection == 1 then
+				restartGame()
+			elseif menuSelection == 2 then
+				-- View leaderboard
+				if LEADERBOARD_ENABLED then
+					fetchLeaderboard()
+					gameState = "leaderboard"
+				else
+					gameState = "menu"
+				end
+			end
+		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			restartGame()
 		end
 	elseif gameState == "menu" then
@@ -1185,6 +1284,17 @@ function playdate.update()
 			gameState = "dead"
 		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			restartGame()
+		end
+	elseif gameState == "leaderboard" then
+		-- A or B to go back to death screen
+		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
+			gameState = "dead"
+		end
+		-- Up/Down to scroll (if needed)
+		if playdate.buttonJustPressed(playdate.kButtonUp) then
+			leaderboardScrollOffset = math.max(0, leaderboardScrollOffset - 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
+			leaderboardScrollOffset = math.min(math.max(0, #leaderboard - 7), leaderboardScrollOffset + 1)
 		end
 	else -- playing
 		-- debug toggle
@@ -1562,8 +1672,15 @@ function playdate.update()
 		for i = #saws, 1, -1 do
 			local saw = saws[i]
 			if saw and saw.sprite and not saw.isFlashing then
-				local sx, sy, sw, sh = saw.sprite:getBounds()
-				local sawRect = playdate.geometry.rect.new(sx, sy, sw, sh)
+				-- Use collision rectangle instead of full bounds for more accurate hitbox
+				local sx, sy = saw.sprite:getPosition()
+				local sawRadius = 12 * 0.8 -- Match the collision rect size (80% of visual)
+				local sawRect = playdate.geometry.rect.new(
+					sx - sawRadius, 
+					sy - sawRadius, 
+					sawRadius * 2, 
+					sawRadius * 2
+				)
 				if bunnyRect:intersects(sawRect) then
 					die()
 					break
@@ -1598,16 +1715,44 @@ function playdate.update()
 		end
 
 		-- Check collision with cannon projectiles
+		-- Helper function to check if bunny is on a platform (not just ground)
+		local function isBunnyOnPlatform()
+			if not isOnGround then return false end
+			local bx, by = bunny:getPosition()
+			local hitRect = bunny:getCollideRect()
+			local hitH = hitRect.height or 22
+			local bunnyBottomHalf = by - (hitH / 2) + 10
+			
+			-- Check if bunny is on a platform (not the ground)
+			for _, plat in ipairs(platforms) do
+				local px, py = plat:getPosition()
+				local pw, ph = plat:getSize()
+				if px and py and pw and ph then
+					local pLeft, pRight, pTop = px - pw/2, px + pw/2, py - ph/2
+					if bx > pLeft and bx < pRight then
+						local distanceAbove = pTop - bunnyBottomHalf
+						if distanceAbove >= -2 and distanceAbove <= 6 then
+							return true -- Bunny is on this platform
+						end
+					end
+				end
+			end
+			return false -- Bunny is on ground, not a platform
+		end
+		
 		for i = #cannonProjectiles, 1, -1 do
 			local projectile = cannonProjectiles[i]
 			if projectile and projectile.sprite then
-				local px, py, pw, ph = projectile.sprite:getBounds()
-				local projRect = playdate.geometry.rect.new(px, py, pw, ph)
-				if bunnyRect:intersects(projRect) then
-					projectile.sprite:remove()
-					table.remove(cannonProjectiles, i)
-					die()
-					break
+				-- Skip collision if bunny is standing on a platform
+				if not isBunnyOnPlatform() then
+					local px, py, pw, ph = projectile.sprite:getBounds()
+					local projRect = playdate.geometry.rect.new(px, py, pw, ph)
+					if bunnyRect:intersects(projRect) then
+						projectile.sprite:remove()
+						table.remove(cannonProjectiles, i)
+						die()
+						break
+					end
 				end
 			end
 		end
@@ -1843,8 +1988,8 @@ function playdate.update()
 		
 		-- Simple text display (same as main menu)
 		gfx.setColor(gfx.kColorBlack)
-		local yPos = 60
-		local lineHeight = 30
+		local yPos = 40
+		local lineHeight = 25
 		
 		-- High Score
 		local highScoreText = "HIGH SCORE: " .. tostring(highScore)
@@ -1869,10 +2014,40 @@ function playdate.update()
 		local currentTimerWidth = font:getTextWidth(currentTimerText)
 		gfx.drawText(currentTimerText, SCREEN_W / 2 - currentTimerWidth / 2, yPos)
 		
+		-- Menu options
+		yPos = yPos + lineHeight + 10
+		local menuY = yPos
+		
+		-- RESTART option
+		local restartText = "RESTART"
+		local restartWidth = font:getTextWidth(restartText)
+		if menuSelection == 1 then
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 5, menuY - 2, restartWidth + 10, 20)
+			gfx.setColor(gfx.kColorWhite)
+		else
+			gfx.setColor(gfx.kColorBlack)
+		end
+		gfx.drawText(restartText, SCREEN_W / 2 - restartWidth / 2, menuY)
+		
+		-- LEADERBOARD option
+		menuY = menuY + lineHeight
+		local leaderboardText = LEADERBOARD_ENABLED and "LEADERBOARD" or "HIGH SCORE"
+		local leaderboardWidth = font:getTextWidth(leaderboardText)
+		if menuSelection == 2 then
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 5, menuY - 2, leaderboardWidth + 10, 20)
+			gfx.setColor(gfx.kColorWhite)
+		else
+			gfx.setColor(gfx.kColorBlack)
+		end
+		gfx.drawText(leaderboardText, SCREEN_W / 2 - leaderboardWidth / 2, menuY)
+		
 		-- Instructions
 		yPos = SCREEN_H - 30
-		local instText = "A: Restart  B: Restart"
+		local instText = "A: Select  B: Restart"
 		local instWidth = font:getTextWidth(instText)
+		gfx.setColor(gfx.kColorBlack)
 		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, yPos)
 		
 	elseif gameState == "menu" then
@@ -1897,6 +2072,90 @@ function playdate.update()
 		local instText = "A: Back  B: Restart"
 		local instWidth = font:getTextWidth(instText)
 		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, buttonY - 20)
+		
+	elseif gameState == "leaderboard" then
+		-- Leaderboard screen
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+		
+		-- Title
+		gfx.setColor(gfx.kColorBlack)
+		local titleText = "LEADERBOARD"
+		local titleWidth = font:getTextWidth(titleText)
+		gfx.drawText(titleText, SCREEN_W / 2 - titleWidth / 2, 10)
+		
+		-- Draw leaderboard entries
+		local startY = 40
+		local lineHeight = 22
+		local maxVisible = 7
+		
+		if leaderboardLoading then
+			gfx.setColor(gfx.kColorBlack)
+			local loadingText = "Loading..."
+			local loadingWidth = font:getTextWidth(loadingText)
+			gfx.drawText(loadingText, SCREEN_W / 2 - loadingWidth / 2, startY + 50)
+		elseif leaderboardError then
+			gfx.setColor(gfx.kColorBlack)
+			local errorText = leaderboardError
+			local errorWidth = font:getTextWidth(errorText)
+			gfx.drawText(errorText, SCREEN_W / 2 - errorWidth / 2, startY + 50)
+		elseif #leaderboard == 0 then
+			gfx.setColor(gfx.kColorBlack)
+			local noDataText = "No scores yet"
+			local noDataWidth = font:getTextWidth(noDataText)
+			gfx.drawText(noDataText, SCREEN_W / 2 - noDataWidth / 2, startY + 50)
+		else
+			-- Draw header
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawText("RANK", 20, startY)
+			gfx.drawText("NAME", 80, startY)
+			gfx.drawText("SCORE", 200, startY)
+			gfx.drawText("TIME", 280, startY)
+			
+			-- Draw entries
+			local visibleStart = leaderboardScrollOffset + 1
+			local visibleEnd = math.min(visibleStart + maxVisible - 1, #leaderboard)
+			
+			for i = visibleStart, visibleEnd do
+				local entry = leaderboard[i]
+				if entry then
+					local y = startY + (i - visibleStart + 1) * lineHeight
+					
+					-- Rank
+					local rankText = tostring(entry.rank or i)
+					gfx.drawText(rankText, 20, y)
+					
+					-- Player name (truncate if too long)
+					local nameText = entry.playerName or "Player"
+					if #nameText > 12 then
+						nameText = string.sub(nameText, 1, 12) .. "..."
+					end
+					gfx.drawText(nameText, 80, y)
+					
+					-- Score
+					local scoreText = tostring(entry.score or 0)
+					gfx.drawText(scoreText, 200, y)
+					
+					-- Time
+					local timeText = formatTime(entry.time or 0)
+					gfx.drawText(timeText, 280, y)
+				end
+			end
+			
+			-- Scroll indicator
+			if #leaderboard > maxVisible then
+				gfx.setColor(gfx.kColorBlack)
+				local scrollText = string.format("%d/%d", leaderboardScrollOffset + 1, #leaderboard)
+				local scrollWidth = font:getTextWidth(scrollText)
+				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
+			end
+		end
+		
+		-- Instructions
+		gfx.setColor(gfx.kColorBlack)
+		local instText = "A/B: Back"
+		local instWidth = font:getTextWidth(instText)
+		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
 	end
 
 	-- debug overlay

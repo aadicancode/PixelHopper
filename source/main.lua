@@ -28,8 +28,11 @@ local GROUND_TOP = GROUND_CENTER_Y - 14
 
 -- === Physics Constants ===
 local GRAVITY = 0.45
-local JUMP_VELOCITY = -5.8
+local JUMP_VELOCITY = -5.5
 local MOVE_SPEED = 3
+local MOVE_ACCELERATION = 0.5 -- horizontal acceleration (increased for more responsive feel)
+local MOVE_DECELERATION = 0.55 -- ground friction / viscosity (increased for less slipperiness)
+local MAX_MOVE_SPEED = 3.0 -- max horizontal speed
 local LEFT_BOUND = 8
 local RIGHT_BOUND = SCREEN_W - 8
 
@@ -254,7 +257,7 @@ local function spawnBlackCarrot()
 	end
 end
 
--- Spawn a white carrot (temporary, disappears after 5 seconds)
+-- Spawn a white carrot (temporary, disappears after 8 seconds)
 local function spawnWhiteCarrot()
 	-- Remove existing white carrot
 	if whiteCarrot then
@@ -339,15 +342,15 @@ bunny:setCollideRect(6, bh - 22, 20, 22)
 
 -- === State ===
 local yVelocity = 0
+local xVelocity = 0
 local isOnGround = true
 local facing = "right"
-local showDebug = true
 local jumpPressedTime = 0
 local useHopDown = false  -- Track which walking animation to use (hop or hopdown)
 local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
-local gameState = "mainmenu" -- "mainmenu" | "playing" | "dead" | "menu" | "leaderboard"
+local gameState = "mainmenu" -- "mainmenu" | "playing" | "dead" | "leaderboard" | "achievements"
 local startTimeMs = playdate.getCurrentTimeMilliseconds()
 local elapsedTime = 0.0
 
@@ -374,6 +377,18 @@ local SPIKE_BALL_ROTATION_SPEED = 4.0 -- degrees per frame
 local CANNON_PROJECTILE_SPEED = 3.0
 local CANNON_FIRE_INTERVAL = 2000 -- milliseconds between shots
 
+-- === Player Name ===
+local playerName = "Player"
+
+local function loadPlayerName()
+	local data = playdate.datastore.read("playerName")
+	if data and type(data) == "string" and #data > 0 then
+		playerName = data
+	end
+end
+
+loadPlayerName()
+
 -- === High score storage (using Playdate datastore) ===
 local highScore = 0
 local highTime = 0.0  -- Time from the same run as high score
@@ -388,7 +403,7 @@ local function loadHighScore()
 end
 
 local function saveHighScore()
-	playdate.datastore.write(highScore, "highScore")
+	playdate.datastore.write("highScore", highScore)
 end
 
 local function loadHighTime()
@@ -399,15 +414,153 @@ local function loadHighTime()
 end
 
 local function saveHighTime()
-	playdate.datastore.write(highTime, "highTime")
+	playdate.datastore.write("highTime", highTime)
 end
 
 loadHighScore()
 loadHighTime()
 
+-- === Achievements System ===
+local achievements = {} -- Table of {id, name, description, unlocked, unlockTime}
+local carrotCollectionTimes = {} -- Track timestamps for speed achievements
+
+-- Achievement definitions
+local achievementDefinitions = {
+	{
+		id = "speed_collector_5",
+		name = "Speed Collector",
+		description = "Collect 5 carrots in under 5 seconds"
+	},
+	{
+		id = "speed_collector_10",
+		name = "Fast Collector",
+		description = "Collect 10 carrots in under 10 seconds"
+	},
+	{
+		id = "carrot_master",
+		name = "Carrot Master",
+		description = "Collect 30 carrots in a single game"
+	}
+}
+
+-- Initialize achievements from definitions
+local function initializeAchievements()
+	for _, def in ipairs(achievementDefinitions) do
+		if not achievements[def.id] then
+			achievements[def.id] = {
+				id = def.id,
+				name = def.name,
+				description = def.description,
+				unlocked = false,
+				unlockTime = 0
+			}
+		end
+	end
+end
+
+-- Load achievements from datastore
+local function loadAchievements()
+	local data = playdate.datastore.read("achievements")
+	if data and type(data) == "table" then
+		achievements = data
+		-- Ensure all defined achievements exist
+		initializeAchievements()
+	else
+		initializeAchievements()
+	end
+end
+
+-- Save achievements to datastore
+local function saveAchievements()
+	playdate.datastore.write("achievements", achievements)
+end
+
+-- Notification system
+local activeNotification = nil
+local notificationQueue = {}
+
+local function showNotification(achievement)
+	-- Add to queue if there's already a notification showing
+	if activeNotification then
+		table.insert(notificationQueue, achievement)
+	else
+		activeNotification = {
+			achievement = achievement,
+			startTime = playdate.getCurrentTimeMilliseconds(),
+			duration = 3000 -- 3 seconds
+		}
+	end
+end
+
+local function updateNotifications()
+	if activeNotification then
+		local now = playdate.getCurrentTimeMilliseconds()
+		if now - activeNotification.startTime >= activeNotification.duration then
+			activeNotification = nil
+			-- Show next notification in queue if any
+			if #notificationQueue > 0 then
+				activeNotification = {
+					achievement = table.remove(notificationQueue, 1),
+					startTime = now,
+					duration = 3000
+				}
+			end
+		end
+	end
+end
+
+-- Check and unlock achievement
+local function checkAchievement(id)
+	local achievement = achievements[id]
+	if not achievement then return end
+	if achievement.unlocked then return end
+	
+	local unlocked = false
+	
+	-- Check achievement conditions
+	if id == "speed_collector_5" then
+		if #carrotCollectionTimes >= 5 then
+			local lastIndex = #carrotCollectionTimes
+			local firstIndex = lastIndex - 4
+			if firstIndex >= 1 and lastIndex >= 5 then
+				local timeSpan = (carrotCollectionTimes[lastIndex] - carrotCollectionTimes[firstIndex]) / 1000.0
+				if timeSpan < 5.0 then
+					unlocked = true
+				end
+			end
+		end
+	elseif id == "speed_collector_10" then
+		if #carrotCollectionTimes >= 10 then
+			local lastIndex = #carrotCollectionTimes
+			local firstIndex = lastIndex - 9
+			if firstIndex >= 1 and lastIndex >= 10 then
+				local timeSpan = (carrotCollectionTimes[lastIndex] - carrotCollectionTimes[firstIndex]) / 1000.0
+				if timeSpan < 10.0 then
+					unlocked = true
+				end
+			end
+		end
+	elseif id == "carrot_master" then
+		if carrotCount >= 30 then
+			unlocked = true
+		end
+	end
+	
+	if unlocked then
+		achievement.unlocked = true
+		achievement.unlockTime = playdate.getCurrentTimeMilliseconds()
+		saveAchievements()
+		showNotification(achievement)
+	end
+end
+
+-- Initialize achievements on startup
+loadAchievements()
+
 -- === Local Leaderboard (persisted using Playdate datastore) ===
 local leaderboard = {} -- Array of {score, time, playerName, rank, date}
 local leaderboardScrollOffset = 0
+local achievementsScrollOffset = 0
 local maxLeaderboardEntries = 10
 
 -- Load local leaderboard from datastore
@@ -415,13 +568,54 @@ local function loadLocalLeaderboard()
 	local data = playdate.datastore.read("localLeaderboard")
 	if data and type(data) == "table" then
 		leaderboard = data
-		-- Ensure all entries have required fields
+		-- Clean up invalid entries
+		local validEntries = {}
 		for i, entry in ipairs(leaderboard) do
-			entry.rank = i
-			entry.playerName = entry.playerName or "Player"
-			entry.score = entry.score or 0
-			entry.time = entry.time or 0
-			entry.date = entry.date or 0
+			-- Check if score is valid (must be a number, not a string with "/")
+			local score = entry.score
+			if type(score) == "number" and score >= 0 then
+				-- Valid numeric score
+				entry.rank = #validEntries + 1
+				entry.playerName = entry.playerName or "Player"
+				entry.score = score
+				entry.time = entry.time or 0
+				entry.date = entry.date or 0
+				table.insert(validEntries, entry)
+			elseif type(score) == "string" then
+				-- Try to convert string to number, skip if it contains "/"
+				if not string.find(score, "/") then
+					local numScore = tonumber(score)
+					if numScore and numScore >= 0 then
+						entry.rank = #validEntries + 1
+						entry.playerName = entry.playerName or "Player"
+						entry.score = numScore
+						entry.time = entry.time or 0
+						entry.date = entry.date or 0
+						table.insert(validEntries, entry)
+					end
+				end
+				-- Skip entries with "/" in score (like "1/10")
+			end
+		end
+		leaderboard = validEntries
+		
+		-- Re-sort after cleanup
+		table.sort(leaderboard, function(a, b)
+			if a.score ~= b.score then
+				return a.score > b.score
+			else
+				return a.time < b.time
+			end
+		end)
+		
+		-- Update ranks after sorting
+		for i = 1, #leaderboard do
+			leaderboard[i].rank = i
+		end
+		
+		-- Save cleaned leaderboard
+		if #validEntries ~= #data then
+			saveLocalLeaderboard()
 		end
 	else
 		leaderboard = {}
@@ -430,7 +624,7 @@ end
 
 -- Save local leaderboard to datastore
 local function saveLocalLeaderboard()
-	playdate.datastore.write(leaderboard, "localLeaderboard")
+	playdate.datastore.write("localLeaderboard", leaderboard)
 end
 
 -- Add a score to the local leaderboard
@@ -439,7 +633,7 @@ local function addScoreToLocalLeaderboard(score, time)
 	local entry = {
 		score = score,
 		time = time,
-		playerName = "Player",
+		playerName = playerName,
 		date = playdate.getSecondsSinceEpoch()
 	}
 	
@@ -491,58 +685,8 @@ end
 -- Sync on startup
 syncHighScoreFromLeaderboard()
 
--- === Multiplayer Leaderboard (using Playdate Scoreboard API) ===
--- Note: To use leaderboards, you need to:
--- 1. Set up scoreboards in the Playdate Developer Portal for your game
--- 2. Ensure your game has a valid bundle ID configured
--- 3. The board ID (SCORE_BOARD_ID) should match the board ID created in the portal
--- 4. Leaderboards will only work when the game is published/connected to Playdate servers
-local LEADERBOARD_ENABLED = true -- Set to false to disable leaderboard features
-
-local leaderboardLoading = false
-local leaderboardError = nil
-
--- Board IDs - these should match the board IDs configured in your pdxinfo
-local SCORE_BOARD_ID = "pixelhopper_scores" -- Main score leaderboard
-local TIME_BOARD_ID = "pixelhopper_times" -- Time leaderboard (optional)
-
--- Send score to Playdate leaderboard
-local function submitScoreToLeaderboard(score, time)
-	if not LEADERBOARD_ENABLED then return end
-	
-	-- Submit score to the main scoreboard
-	playdate.scoreboards.addScore(SCORE_BOARD_ID, score, function(error)
-		if error then
-			-- Handle error silently or log it
-		else
-			-- Success - refresh leaderboard (if using online leaderboard)
-			-- fetchLeaderboard()
-		end
-	end)
-end
-
--- Fetch leaderboard from Playdate servers (optional, for online leaderboard)
-local function fetchLeaderboard()
-	if not LEADERBOARD_ENABLED then return end
-	
-	leaderboardLoading = true
-	leaderboardError = nil
-	
-	-- Get top scores from the scoreboard
-	playdate.scoreboards.getScores(SCORE_BOARD_ID, maxLeaderboardEntries, function(scores, error)
-		leaderboardLoading = false
-		if error then
-			leaderboardError = "Failed to load"
-			-- Don't clear local leaderboard on error
-		elseif scores then
-			-- Optionally merge with local leaderboard or replace
-			-- For now, we'll keep using local leaderboard
-		end
-	end)
-end
-
 -- === UI / Menu selection for death screen ===
-local menuOptions = { "RESTART", "LEADERBOARD" }
+local menuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS" }
 local menuSelection = 1
 
 -- === Utility: spawn an arrow at x, with vy ===
@@ -1038,13 +1182,14 @@ end
 -------------------------------------------------------
 
 -- Define cannon positions (6 total: 2 per level, left and right)
+-- Cannons positioned higher so projectiles pass above platforms
 local CANNON_POSITIONS = {
-	{ x = LEFT_BOUND, y = 160, facing = "right" },  -- Ground left
-	{ x = RIGHT_BOUND, y = 160, facing = "left" },  -- Ground right
-	{ x = LEFT_BOUND, y = 110, facing = "right" },  -- Middle left
-	{ x = RIGHT_BOUND, y = 110, facing = "left" },  -- Middle right
-	{ x = LEFT_BOUND, y = 60, facing = "right" },   -- Top left
-	{ x = RIGHT_BOUND, y = 60, facing = "left" },   -- Top right
+	{ x = LEFT_BOUND, y = 140, facing = "right" },  -- Ground left (raised from 160)
+	{ x = RIGHT_BOUND, y = 140, facing = "left" },  -- Ground right (raised from 160)
+	{ x = LEFT_BOUND, y = 90, facing = "right" },   -- Middle left (raised from 110)
+	{ x = RIGHT_BOUND, y = 90, facing = "left" },   -- Middle right (raised from 110)
+	{ x = LEFT_BOUND, y = 40, facing = "right" },   -- Top left (raised from 60)
+	{ x = RIGHT_BOUND, y = 40, facing = "left" },   -- Top right (raised from 60)
 }
 
 -- Define spike ball types
@@ -1289,6 +1434,7 @@ local function restartGame()
 	gameState = "playing"
 	menuSelection = 1
 	yVelocity = 0
+	xVelocity = 0
 	isOnGround = true
 	useHopDown = false
 	lastWalkAnimationTime = 0
@@ -1297,6 +1443,8 @@ local function restartGame()
 	spawnBlackCarrot()
 	lastWhiteCarrotTime = playdate.getCurrentTimeMilliseconds()
 	whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
+	-- Reset achievement tracking
+	carrotCollectionTimes = {}
 end
 
 local function die()
@@ -1308,6 +1456,9 @@ local function die()
 	lastScore = carrotCount
 	lastTime = elapsedTime
 
+	-- Check "Carrot Master" achievement (30 carrots in a single game)
+	checkAchievement("carrot_master")
+
 	-- Add score to local leaderboard (always, so player can see their history)
 	addScoreToLocalLeaderboard(carrotCount, elapsedTime)
 
@@ -1315,10 +1466,8 @@ local function die()
 	-- This ensures highScore/highTime always match the top leaderboard entry
 	syncHighScoreFromLeaderboard()
 
-	-- Submit score to multiplayer leaderboard (optional, for online leaderboard)
-	submitScoreToLeaderboard(carrotCount, elapsedTime)
-
 	gameState = "dead"
+	menuSelection = 1
 end
 
 -- Format time as MM:SS:CS
@@ -1338,10 +1487,32 @@ function playdate.update()
 		elapsedTime = (playdate.getCurrentTimeMilliseconds() - startTimeMs) / 1000.0
 	end
 
+	-- Update notifications
+	updateNotifications()
+
 	-- handle input for menu/state
 	if gameState == "mainmenu" then
-		-- A or B button starts the game
-		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
+		-- Up/Down to navigate menu, A to select, B to restart
+		if playdate.buttonJustPressed(playdate.kButtonUp) then
+			menuSelection = math.max(1, menuSelection - 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
+			menuSelection = math.min(#menuOptions, menuSelection + 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonA) then
+			if menuSelection == 1 then
+				-- Reset current stats and start game
+				carrotCount = 0
+				elapsedTime = 0.0
+				startTimeMs = playdate.getCurrentTimeMilliseconds()
+				gameState = "playing"
+				restartGame()
+			elseif menuSelection == 2 then
+				-- View leaderboard
+				gameState = "leaderboard"
+			elseif menuSelection == 3 then
+				-- View achievements
+				gameState = "achievements"
+			end
+		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			-- Reset current stats and start game
 			carrotCount = 0
 			elapsedTime = 0.0
@@ -1354,28 +1525,28 @@ function playdate.update()
 		if playdate.buttonJustPressed(playdate.kButtonUp) then
 			menuSelection = math.max(1, menuSelection - 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
-			menuSelection = math.min(2, menuSelection + 1)
+			menuSelection = math.min(#menuOptions, menuSelection + 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonA) then
 			if menuSelection == 1 then
 				restartGame()
 			elseif menuSelection == 2 then
 				-- View leaderboard (local leaderboard is always available)
 				gameState = "leaderboard"
+			elseif menuSelection == 3 then
+				-- View achievements
+				gameState = "achievements"
 			end
 		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			restartGame()
 		end
-	elseif gameState == "menu" then
-		-- A to go back, B to restart
-		if playdate.buttonJustPressed(playdate.kButtonA) then
-			gameState = "dead"
-		elseif playdate.buttonJustPressed(playdate.kButtonB) then
-			restartGame()
-		end
 	elseif gameState == "leaderboard" then
-		-- A or B to go back to death screen
+		-- A or B to go back
 		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
-			gameState = "dead"
+			if lastScore > 0 or lastTime > 0 then
+				gameState = "dead"
+			else
+				gameState = "mainmenu"
+			end
 		end
 		-- Up/Down to scroll (if needed)
 		if playdate.buttonJustPressed(playdate.kButtonUp) then
@@ -1383,24 +1554,59 @@ function playdate.update()
 		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
 			leaderboardScrollOffset = math.min(math.max(0, #leaderboard - 7), leaderboardScrollOffset + 1)
 		end
-	else -- playing
-		-- debug toggle
-		if playdate.buttonJustPressed(playdate.kButtonB) then
-			showDebug = not showDebug
+	elseif gameState == "achievements" then
+		-- A or B to go back
+		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
+			if lastScore > 0 or lastTime > 0 then
+				gameState = "dead"
+			else
+				gameState = "mainmenu"
+			end
 		end
-
-		-- movement
+		-- Up/Down to scroll (if needed)
+		if playdate.buttonJustPressed(playdate.kButtonUp) then
+			achievementsScrollOffset = math.max(0, achievementsScrollOffset - 1)
+		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
+			achievementsScrollOffset = math.min(math.max(0, #achievementDefinitions - 7), achievementsScrollOffset + 1)
+		end
+	else -- playing
+		-- movement with acceleration/deceleration
 		local moved = false
 		local bx, by = bunny:getPosition()
 
 		if playdate.buttonIsPressed(playdate.kButtonLeft) then
 			facing = "left"
-			bunny:moveBy(-MOVE_SPEED, 0)
+			-- if moving right, quickly reverse direction (no sliding)
+			if xVelocity > 0 then
+				xVelocity = -MOVE_ACCELERATION * 1.5 -- quick reverse, start moving left
+			else
+				xVelocity = math.max(-MAX_MOVE_SPEED, xVelocity - MOVE_ACCELERATION)
+			end
 			moved = true
 		elseif playdate.buttonIsPressed(playdate.kButtonRight) then
 			facing = "right"
-			bunny:moveBy(MOVE_SPEED, 0)
+			-- if moving left, quickly reverse direction (no sliding)
+			if xVelocity < 0 then
+				xVelocity = MOVE_ACCELERATION * 1.5 -- quick reverse, start moving right
+			else
+				xVelocity = math.min(MAX_MOVE_SPEED, xVelocity + MOVE_ACCELERATION)
+			end
 			moved = true
+		else
+			-- very fast stop (almost instant, but smoother)
+			if math.abs(xVelocity) > 0.1 then
+				xVelocity = xVelocity * 0.3 -- quick deceleration
+			else
+				xVelocity = 0 -- stop when very slow
+			end
+		end
+
+		-- apply horizontal velocity
+		if math.abs(xVelocity) > 0.01 then
+			bunny:moveBy(xVelocity, 0)
+			if math.abs(xVelocity) > 0.1 then
+				moved = true
+			end
 		end
 
 		-- allow mid-air sprite change
@@ -1414,23 +1620,24 @@ function playdate.update()
 		if bx < LEFT_BOUND then bunny:moveTo(LEFT_BOUND, by)
 		elseif bx > RIGHT_BOUND then bunny:moveTo(RIGHT_BOUND, by) end
 
-		-- Jump
+		-- Jump with acceleration
 		if (playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonUp)) and isOnGround then
-			yVelocity = JUMP_VELOCITY
+			yVelocity = JUMP_VELOCITY -- initial jump velocity
 			isOnGround = false
 			jumpPressedTime = 0
 			setHopSprite()
-			-- Play jump sound if available
 			if jumpSound then
 				jumpSound:play()
 			end
 		end
 
-		-- Hold jump
+		-- Hold jump for additional lift
 		if (playdate.buttonIsPressed(playdate.kButtonA) or playdate.buttonIsPressed(playdate.kButtonUp)) and not isOnGround and yVelocity < 0 then
 			jumpPressedTime += 1
-			if jumpPressedTime < 10 then
-				yVelocity -= 0.25
+			if jumpPressedTime < 12 then
+				yVelocity -= 0.25 -- accelerate upward (increased for higher jump)
+			else
+				yVelocity += 0.15 -- start decelerating
 			end
 		end
 
@@ -1553,12 +1760,19 @@ function playdate.update()
 					-- particles
 					spawnParticles(cx + cw/2, cy + ch/2)
 
+					local now = playdate.getCurrentTimeMilliseconds()
 					if c.isWhite then
 						carrotCount += 3
+						-- Track 3 carrot collections for white carrot
+						table.insert(carrotCollectionTimes, now)
+						table.insert(carrotCollectionTimes, now)
+						table.insert(carrotCollectionTimes, now)
 						-- Remove white carrot and schedule next one
 						removeWhiteCarrot()
 					else
 						carrotCount += 1
+						-- Track carrot collection timestamp
+						table.insert(carrotCollectionTimes, now)
 						-- Remove black carrot and spawn new one
 						if c.flashTimer then c.flashTimer:remove() end
 						if c.bounceTimer then c.bounceTimer:remove() end
@@ -1566,6 +1780,15 @@ function playdate.update()
 						table.remove(carrots, i)
 						spawnBlackCarrot()
 					end
+					
+					-- Keep only last 10 timestamps for efficiency
+					while #carrotCollectionTimes > 10 do
+						table.remove(carrotCollectionTimes, 1)
+					end
+					
+					-- Check speed achievements
+					checkAchievement("speed_collector_5")
+					checkAchievement("speed_collector_10")
 				end
 			end
 		end
@@ -1582,6 +1805,22 @@ function playdate.update()
 				-- particles
 				spawnParticles(cx + cw/2, cy + ch/2)
 				carrotCount += 3
+				
+				-- Track 3 carrot collections for white carrot
+				local now = playdate.getCurrentTimeMilliseconds()
+				table.insert(carrotCollectionTimes, now)
+				table.insert(carrotCollectionTimes, now)
+				table.insert(carrotCollectionTimes, now)
+				
+				-- Keep only last 10 timestamps for efficiency
+				while #carrotCollectionTimes > 10 do
+					table.remove(carrotCollectionTimes, 1)
+				end
+				
+				-- Check speed achievements
+				checkAchievement("speed_collector_5")
+				checkAchievement("speed_collector_10")
+				
 				removeWhiteCarrot()
 			end
 		end
@@ -1836,16 +2075,28 @@ function playdate.update()
 			if projectile and projectile.sprite then
 				-- Skip collision if bunny is standing on a platform
 				if not isBunnyOnPlatform() then
-					-- Use sprite's actual position and collision rect for accurate collision
-					local px, py = projectile.sprite:getPosition()
-					local collideRect = projectile.sprite:getCollideRect()
-					local projRect = playdate.geometry.rect.new(
-						px + collideRect.x,
-						py + collideRect.y,
-						collideRect.width,
-						collideRect.height
+					-- Use bunny's collision rectangle (not full bounds) for cannon projectiles
+					local bunnyCollideRect = bunny:getCollideRect()
+					local bunnyBoundsX, bunnyBoundsY = bunny:getBounds()
+					-- Calculate bunny collision rect: bounds top-left + collision rect offset
+					local bunnyCollisionRect = playdate.geometry.rect.new(
+						bunnyBoundsX + bunnyCollideRect.x,
+						bunnyBoundsY + bunnyCollideRect.y,
+						bunnyCollideRect.width,
+						bunnyCollideRect.height
 					)
-					if bunnyRect:intersects(projRect) then
+					
+					-- Use projectile's collision rect
+					local projCollideRect = projectile.sprite:getCollideRect()
+					local projBoundsX, projBoundsY = projectile.sprite:getBounds()
+					local projRect = playdate.geometry.rect.new(
+						projBoundsX + projCollideRect.x,
+						projBoundsY + projCollideRect.y,
+						projCollideRect.width,
+						projCollideRect.height
+					)
+					
+					if bunnyCollisionRect:intersects(projRect) then
 						projectile.sprite:remove()
 						table.remove(cannonProjectiles, i)
 						die()
@@ -1861,6 +2112,13 @@ function playdate.update()
 		if activeParticles[i]:update() then
 			table.remove(activeParticles, i)
 		end
+	end
+
+	-- Control bunny visibility based on game state
+	if gameState == "playing" then
+		bunny:setVisible(true)
+	else
+		bunny:setVisible(false)
 	end
 
 	-- Update sprites & timers
@@ -1924,160 +2182,124 @@ function playdate.update()
 		gfx.drawText(formatTime(elapsedTime), 8, 8)
 		-- Carrot count at top-right
 		gfx.drawText("Carrots: " .. carrotCount, SCREEN_W - 100, 8)
-	end
-	
-	-- Draw simple carrot icon (8x8) - white carrot on dark background
-	local function drawCarrotIcon(x, y)
-		gfx.setColor(gfx.kColorWhite)
-		-- Carrot body (orange-ish - using white for visibility)
-		gfx.fillRect(x + 2, y + 3, 4, 4)
-		-- Carrot top (green stem)
-		gfx.fillRect(x + 3, y, 2, 3)
-		gfx.fillRect(x + 2, y + 1, 1, 1)
-		gfx.fillRect(x + 5, y + 1, 1, 1)
-	end
-	
-	-- Draw simple clock icon (8x8) - white clock on dark background
-	local function drawClockIcon(x, y)
-		gfx.setColor(gfx.kColorWhite)
-		-- Clock face (square approximation of circle)
-		gfx.drawRect(x + 1, y + 1, 6, 6)
-		-- Clock hands (pointing to 12 o'clock)
-		gfx.fillRect(x + 3, y + 2, 2, 2) -- hour hand at 12
-		-- Center dot
-		gfx.fillRect(x + 3, y + 3, 2, 2)
-	end
-	
-	-- Draw info panel (Poor Bunny style)
-	local function drawInfoPanel(x, y, w, h, isBest, score, timeStr)
-		-- Panel background
-		if isBest then
-			-- Dark reddish-purple fill for best panel
-			-- Using a pattern to simulate dark purple/red (Playdate is 1-bit, so we use dithering pattern)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(x, y, w, h)
-			-- Add some pattern for purple/red effect (using alternating pattern)
-			for i = 0, w - 1, 2 do
-				for j = 0, h - 1, 2 do
-					if (i + j) % 4 == 0 then
-						gfx.setColor(gfx.kColorWhite)
-						gfx.fillRect(x + i, y + j, 1, 1)
-					end
-				end
-			end
-			-- Golden border (thick white border to simulate gold)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.setLineWidth(3)
-			gfx.drawRect(x, y, w, h)
-			-- Add inner highlight for gold effect
-			gfx.setLineWidth(1)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.drawRect(x + 2, y + 2, w - 4, h - 4)
-		else
-			-- Dark grey fill for current panel
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(x, y, w, h)
-			-- Add pattern for grey effect
-			for i = 0, w - 1, 3 do
-				for j = 0, h - 1, 3 do
-					if (i + j) % 6 == 0 then
-						gfx.setColor(gfx.kColorWhite)
-						gfx.fillRect(x + i, y + j, 1, 1)
-					end
-				end
-			end
-			-- Grey border (thin white border)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.setLineWidth(1)
-			gfx.drawRect(x, y, w, h)
-		end
-		gfx.setLineWidth(1)
-		gfx.setColor(gfx.kColorBlack)
 		
-		-- Carrot icon and score (top row)
-		drawCarrotIcon(x + 8, y + 6)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.drawText(tostring(score), x + 20, y + 6)
-		
-		-- Clock icon and time (bottom row)
-		drawClockIcon(x + 8, y + 20)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.drawText(timeStr, x + 20, y + 20)
-	end
-	
-	-- Draw restart button
-	local function drawRestartButton(x, y, size)
-		-- Button background (light blue)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.fillRect(x, y, size, size)
-		-- Outer white border
-		gfx.setColor(gfx.kColorWhite)
-		gfx.setLineWidth(2)
-		gfx.drawRect(x, y, size, size)
-		-- Inner dark border
-		gfx.setColor(gfx.kColorBlack)
-		gfx.setLineWidth(1)
-		gfx.drawRect(x + 2, y + 2, size - 4, size - 4)
-		-- Restart arrow (curved arrow pointing counter-clockwise)
-		gfx.setColor(gfx.kColorBlack)
-		local centerX, centerY = x + size/2, y + size/2
-		-- Draw curved arrow
-		gfx.setLineWidth(2)
-		-- Arrow arc
-		for i = 0, 8 do
-			local angle = i * math.pi / 4
-			local px = centerX + math.cos(angle) * 4
-			local py = centerY + math.sin(angle) * 4
-			if i == 0 then
-				gfx.fillRect(px - 1, py - 1, 2, 2)
-			else
-				gfx.fillRect(px, py, 1, 1)
-			end
+		-- Draw achievement notification
+		if activeNotification then
+			local notif = activeNotification.achievement
+			local notifFont = gfx.getFont()
+			local notifY = 30
+			local padding = 8
+			local textWidth = notifFont:getTextWidth(notif.name)
+			local descWidth = notifFont:getTextWidth(notif.description)
+			local boxWidth = math.max(textWidth, descWidth) + padding * 2
+			local boxHeight = 40
+			local boxX = (SCREEN_W - boxWidth) / 2
+			
+			-- Draw notification background
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(boxX, notifY, boxWidth, boxHeight)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.setLineWidth(2)
+			gfx.drawRect(boxX, notifY, boxWidth, boxHeight)
+			
+			-- Draw achievement text
+			gfx.setColor(gfx.kColorWhite)
+			gfx.drawText(notif.name, boxX + padding, notifY + 6)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.drawText(notif.description, boxX + padding, notifY + 22)
 		end
-		gfx.setLineWidth(1)
 	end
 	
 	-- draw death/menu overlays
 	local font = gfx.getFont()
 	
 	if gameState == "mainmenu" then
-		-- Draw background
+		-- Draw background (same as death screen)
 		gfx.setColor(gfx.kColorWhite)
 		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
 		
-		-- Simple text display
+		-- Simple text display (same as death screen)
 		gfx.setColor(gfx.kColorBlack)
-		local yPos = 60
-		local lineHeight = 30
+		local yPos = 10
+		local statsLineHeight = 22  -- Reduced spacing for stats
+		
+		-- Player Name (ensure we have the latest value)
+		local displayPlayerName = playerName or "Player"
+		if not displayPlayerName or displayPlayerName == "" then
+			displayPlayerName = "Player"
+		end
+		local playerNameText = "PLAYER: " .. displayPlayerName
+		local playerNameWidth = font:getTextWidth(playerNameText)
+		gfx.drawText(playerNameText, SCREEN_W / 2 - playerNameWidth / 2, yPos)
 		
 		-- High Score
+		yPos = yPos + statsLineHeight + 5
 		local highScoreText = "HIGH SCORE: " .. tostring(highScore)
 		local highScoreWidth = font:getTextWidth(highScoreText)
 		gfx.drawText(highScoreText, SCREEN_W / 2 - highScoreWidth / 2, yPos)
 		
 		-- High Timer
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local highTimerText = "HIGH TIMER: " .. formatTime(highTime)
 		local highTimerWidth = font:getTextWidth(highTimerText)
 		gfx.drawText(highTimerText, SCREEN_W / 2 - highTimerWidth / 2, yPos)
 		
 		-- Current Score
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local currentScoreText = "CURRENT SCORE: " .. tostring(lastScore)
 		local currentScoreWidth = font:getTextWidth(currentScoreText)
 		gfx.drawText(currentScoreText, SCREEN_W / 2 - currentScoreWidth / 2, yPos)
 		
 		-- Current Timer
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local currentTimerText = "CURRENT TIMER: " .. formatTime(lastTime)
 		local currentTimerWidth = font:getTextWidth(currentTimerText)
 		gfx.drawText(currentTimerText, SCREEN_W / 2 - currentTimerWidth / 2, yPos)
 		
-		-- Instructions
-		yPos = SCREEN_H - 30
-		local instText = "A: Start  B: Start"
+		-- Menu options (with more spacing)
+		yPos = yPos + statsLineHeight + 5
+		local menuY = yPos
+		local menuLineHeight = 22  -- Spacing between menu items
+		
+		-- RESTART option
+		local restartText = "RESTART"
+		local restartWidth = font:getTextWidth(restartText)
+		if menuSelection == 1 then
+			-- Draw selection line on the left side
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 8, menuY, 3, 16)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawText(restartText, SCREEN_W / 2 - restartWidth / 2, menuY)
+		
+		-- LEADERBOARD option
+		menuY = menuY + menuLineHeight
+		local leaderboardText = "LEADERBOARD"
+		local leaderboardWidth = font:getTextWidth(leaderboardText)
+		if menuSelection == 2 then
+			-- Draw selection line on the left side
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 8, menuY, 3, 16)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawText(leaderboardText, SCREEN_W / 2 - leaderboardWidth / 2, menuY)
+		
+		-- ACHIEVEMENTS option
+		menuY = menuY + menuLineHeight
+		local achievementsText = "ACHIEVEMENTS"
+		local achievementsWidth = font:getTextWidth(achievementsText)
+		if menuSelection == 3 then
+			-- Draw selection line on the left side
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - achievementsWidth / 2 - 8, menuY, 3, 16)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawText(achievementsText, SCREEN_W / 2 - achievementsWidth / 2, menuY)
+		
+		-- Instructions (moved to very bottom with more space)
+		local instText = "A: Select  B: Start"
 		local instWidth = font:getTextWidth(instText)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, yPos)
+		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
 		
 	elseif gameState == "dead" then
 		-- Draw background (same as main menu)
@@ -2086,8 +2308,8 @@ function playdate.update()
 		
 		-- Simple text display (same as main menu)
 		gfx.setColor(gfx.kColorBlack)
-		local yPos = 40
-		local lineHeight = 25
+		local yPos = 30
+		local statsLineHeight = 22  -- Reduced spacing for stats
 		
 		-- High Score
 		local highScoreText = "HIGH SCORE: " .. tostring(highScore)
@@ -2095,81 +2317,68 @@ function playdate.update()
 		gfx.drawText(highScoreText, SCREEN_W / 2 - highScoreWidth / 2, yPos)
 		
 		-- High Timer
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local highTimerText = "HIGH TIMER: " .. formatTime(highTime)
 		local highTimerWidth = font:getTextWidth(highTimerText)
 		gfx.drawText(highTimerText, SCREEN_W / 2 - highTimerWidth / 2, yPos)
 		
 		-- Current Score
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local currentScoreText = "CURRENT SCORE: " .. tostring(lastScore)
 		local currentScoreWidth = font:getTextWidth(currentScoreText)
 		gfx.drawText(currentScoreText, SCREEN_W / 2 - currentScoreWidth / 2, yPos)
 		
 		-- Current Timer
-		yPos = yPos + lineHeight
+		yPos = yPos + statsLineHeight
 		local currentTimerText = "CURRENT TIMER: " .. formatTime(lastTime)
 		local currentTimerWidth = font:getTextWidth(currentTimerText)
 		gfx.drawText(currentTimerText, SCREEN_W / 2 - currentTimerWidth / 2, yPos)
 		
-		-- Menu options
-		yPos = yPos + lineHeight + 10
+		-- Menu options (with more spacing)
+		yPos = yPos + statsLineHeight + 5
 		local menuY = yPos
+		local menuLineHeight = 22  -- Spacing between menu items
 		
 		-- RESTART option
 		local restartText = "RESTART"
 		local restartWidth = font:getTextWidth(restartText)
 		if menuSelection == 1 then
+			-- Draw selection line on the left side
 			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 5, menuY - 2, restartWidth + 10, 20)
-			gfx.setColor(gfx.kColorWhite)
-		else
-			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 8, menuY, 3, 16)
 		end
+		gfx.setColor(gfx.kColorBlack)
 		gfx.drawText(restartText, SCREEN_W / 2 - restartWidth / 2, menuY)
 		
 		-- LEADERBOARD option
-		menuY = menuY + lineHeight
+		menuY = menuY + menuLineHeight
 		local leaderboardText = "LEADERBOARD"
 		local leaderboardWidth = font:getTextWidth(leaderboardText)
 		if menuSelection == 2 then
+			-- Draw selection line on the left side
 			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 5, menuY - 2, leaderboardWidth + 10, 20)
-			gfx.setColor(gfx.kColorWhite)
-		else
-			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 8, menuY, 3, 16)
 		end
+		gfx.setColor(gfx.kColorBlack)
 		gfx.drawText(leaderboardText, SCREEN_W / 2 - leaderboardWidth / 2, menuY)
 		
-		-- Instructions
-		yPos = SCREEN_H - 30
+		-- ACHIEVEMENTS option
+		menuY = menuY + menuLineHeight
+		local achievementsText = "ACHIEVEMENTS"
+		local achievementsWidth = font:getTextWidth(achievementsText)
+		if menuSelection == 3 then
+			-- Draw selection line on the left side
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - achievementsWidth / 2 - 8, menuY, 3, 16)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawText(achievementsText, SCREEN_W / 2 - achievementsWidth / 2, menuY)
+		
+		-- Instructions (moved to very bottom with more space)
 		local instText = "A: Select  B: Restart"
 		local instWidth = font:getTextWidth(instText)
 		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, yPos)
-		
-	elseif gameState == "menu" then
-		-- High score screen - same style as death screen
-		gfx.setColor(gfx.kColorBlack)
-		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-		
-		-- Best score panel
-		drawInfoPanel(20, 40, 200, 30, true, highScore, formatTime(highTime))
-		
-		-- Current score panel
-		drawInfoPanel(20, 80, 200, 30, false, carrotCount, formatTime(elapsedTime))
-		
-		-- Restart button
-		local buttonSize = 32
-		local buttonX = SCREEN_W / 2 - buttonSize / 2
-		local buttonY = SCREEN_H - buttonSize - 20
-		drawRestartButton(buttonX, buttonY, buttonSize)
-		
-		-- Instructions
-		gfx.setColor(gfx.kColorWhite)
-		local instText = "A: Back  B: Restart"
-		local instWidth = font:getTextWidth(instText)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, buttonY - 20)
+		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
 		
 	elseif gameState == "leaderboard" then
 		-- Leaderboard screen
@@ -2193,12 +2402,17 @@ function playdate.update()
 			local noDataWidth = font:getTextWidth(noDataText)
 			gfx.drawText(noDataText, SCREEN_W / 2 - noDataWidth / 2, startY + 50)
 		else
-			-- Draw header
+			-- Draw header with better spacing
 			gfx.setColor(gfx.kColorBlack)
-			gfx.drawText("RANK", 20, startY)
-			gfx.drawText("NAME", 80, startY)
-			gfx.drawText("SCORE", 200, startY)
-			gfx.drawText("TIME", 280, startY)
+			local rankX = 20
+			local nameX = 60
+			local scoreX = 150
+			local timeX = 230
+			
+			gfx.drawText("RANK", rankX, startY)
+			gfx.drawText("NAME", nameX, startY)
+			gfx.drawText("SCORE", scoreX, startY)
+			gfx.drawText("TIME", timeX, startY)
 			
 			-- Draw entries
 			local visibleStart = leaderboardScrollOffset + 1
@@ -2211,28 +2425,51 @@ function playdate.update()
 					
 					-- Rank
 					local rankText = tostring(entry.rank or i)
-					gfx.drawText(rankText, 20, y)
+					gfx.drawText(rankText, rankX, y)
 					
-					-- Player name (truncate if too long)
+					-- Player name (truncate if too long to fit column width)
 					local nameText = entry.playerName or "Player"
-					if #nameText > 12 then
-						nameText = string.sub(nameText, 1, 12) .. "..."
+					local maxNameWidth = scoreX - nameX - 10  -- Leave 10px gap before score
+					if font:getTextWidth(nameText) > maxNameWidth then
+						-- Truncate name to fit
+						for j = #nameText, 1, -1 do
+							local testText = string.sub(nameText, 1, j) .. "..."
+							if font:getTextWidth(testText) <= maxNameWidth then
+								nameText = testText
+								break
+							end
+						end
 					end
-					gfx.drawText(nameText, 80, y)
+					gfx.drawText(nameText, nameX, y)
 					
-					-- Score
-					local scoreText = tostring(entry.score or 0)
-					gfx.drawText(scoreText, 200, y)
+					-- Score (ensure it's a number, not a string)
+					local score = entry.score or 0
+					if type(score) ~= "number" then
+						score = tonumber(score) or 0
+					end
+					local scoreText = tostring(score)
+					local maxScoreWidth = timeX - scoreX - 10  -- Leave 10px gap before time
+					if font:getTextWidth(scoreText) > maxScoreWidth then
+						-- Truncate score to fit
+						for j = #scoreText, 1, -1 do
+							local testText = string.sub(scoreText, 1, j)
+							if font:getTextWidth(testText) <= maxScoreWidth then
+								scoreText = testText
+								break
+							end
+						end
+					end
+					gfx.drawText(scoreText, scoreX, y)
 					
 					-- Time
 					local timeText = formatTime(entry.time or 0)
-					gfx.drawText(timeText, 280, y)
+					gfx.drawText(timeText, timeX, y)
 				end
 			end
 			
 			-- Scroll indicator
 			if #leaderboard > maxVisible then
-				gfx.setColor(gfx.kColorBlack)
+		gfx.setColor(gfx.kColorBlack)
 				local scrollText = string.format("%d/%d", leaderboardScrollOffset + 1, #leaderboard)
 				local scrollWidth = font:getTextWidth(scrollText)
 				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
@@ -2244,15 +2481,105 @@ function playdate.update()
 		local instText = "A/B: Back"
 		local instWidth = font:getTextWidth(instText)
 		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
-	end
-
-	-- debug overlay
-	if showDebug and gameState == "playing" then
+		
+	elseif gameState == "achievements" then
+		-- Achievements screen
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+		
+		-- Title
 		gfx.setColor(gfx.kColorBlack)
-		local dbx, dby = bunny:getPosition()
-		gfx.drawText(string.format("x: %.1f y: %.1f", dbx, dby), 8, 32)
-		gfx.drawText(string.format("yVel: %.2f", yVelocity), 8, 48)
-		gfx.drawText("isOnGround: " .. tostring(isOnGround), 8, 64)
-		gfx.drawText("Facing: " .. facing, 8, 80)
+		local titleText = "ACHIEVEMENTS"
+		local titleWidth = font:getTextWidth(titleText)
+		gfx.drawText(titleText, SCREEN_W / 2 - titleWidth / 2, 10)
+		
+		-- Draw achievements list
+		local startY = 40
+		local lineHeight = 42  -- Increased spacing even more to prevent overlap
+		local maxVisible = 5   -- Reduced visible items to fit better
+		
+		if #achievementDefinitions == 0 then
+			gfx.setColor(gfx.kColorBlack)
+			local noDataText = "No achievements"
+			local noDataWidth = font:getTextWidth(noDataText)
+			gfx.drawText(noDataText, SCREEN_W / 2 - noDataWidth / 2, startY + 50)
+		else
+			-- Draw entries
+			local visibleStart = achievementsScrollOffset + 1
+			local visibleEnd = math.min(visibleStart + maxVisible - 1, #achievementDefinitions)
+			
+			for i = visibleStart, visibleEnd do
+				local def = achievementDefinitions[i]
+				local achievement = achievements[def.id]
+				if achievement then
+					local y = startY + (i - visibleStart) * lineHeight
+					
+					-- Achievement status indicator (locked/unlocked)
+					local statusX = 20
+					if achievement.unlocked then
+						-- Draw checkmark or unlocked indicator
+						gfx.setColor(gfx.kColorBlack)
+						gfx.fillRect(statusX, y + 4, 12, 12)
+						gfx.setColor(gfx.kColorWhite)
+						-- Simple checkmark
+						gfx.drawText("✓", statusX + 2, y + 2)
+					else
+						-- Draw locked indicator
+						gfx.setColor(gfx.kColorBlack)
+						gfx.drawRect(statusX, y + 4, 12, 12)
+						gfx.setColor(gfx.kColorBlack)
+						gfx.drawText("?", statusX + 4, y + 2)
+					end
+					
+					-- Achievement name (always show, with proper spacing)
+					gfx.setColor(gfx.kColorBlack)
+					local nameText = achievement.name
+					if not achievement.unlocked then
+						nameText = "???"
+					end
+					-- Draw name on first line
+					gfx.drawText(nameText, statusX + 18, y + 2)
+					
+					-- Achievement description (only if unlocked, with proper spacing)
+					if achievement.unlocked then
+						gfx.setColor(gfx.kColorBlack)
+						local descText = achievement.description
+						-- Truncate if too long
+						local maxWidth = SCREEN_W - statusX - 18 - 20
+						if font:getTextWidth(descText) > maxWidth then
+							-- Find the longest substring that fits
+							for i = #descText, 1, -1 do
+								local testText = string.sub(descText, 1, i) .. "..."
+								if font:getTextWidth(testText) <= maxWidth then
+									descText = testText
+									break
+								end
+							end
+						end
+						-- Draw description on second line with more spacing (20 pixels down from name)
+						gfx.drawText(descText, statusX + 18, y + 20)
+					else
+						-- For locked achievements, show hint text
+						gfx.setColor(gfx.kColorBlack)
+						local hintText = "Locked"
+						gfx.drawText(hintText, statusX + 18, y + 20)
+					end
+				end
+			end
+			
+			-- Scroll indicator
+			if #achievementDefinitions > maxVisible then
+				gfx.setColor(gfx.kColorBlack)
+				local scrollText = string.format("%d/%d", achievementsScrollOffset + 1, #achievementDefinitions)
+				local scrollWidth = font:getTextWidth(scrollText)
+				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
+			end
+		end
+		
+		-- Instructions
+		gfx.setColor(gfx.kColorBlack)
+		local instText = "A/B: Back"
+		local instWidth = font:getTextWidth(instText)
+		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
 	end
 end

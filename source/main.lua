@@ -4,6 +4,32 @@ import "CoreLibs/timer"
 
 local gfx = playdate.graphics
 
+-- === Game clock (excludes time spent paused in the system menu or locked) ===
+local pausedTotalMs = 0
+local pauseStartMs = nil
+
+local function nowMs()
+	return playdate.getCurrentTimeMilliseconds() - pausedTotalMs
+end
+
+local function beginPause()
+	if not pauseStartMs then
+		pauseStartMs = playdate.getCurrentTimeMilliseconds()
+	end
+end
+
+local function endPause()
+	if pauseStartMs then
+		pausedTotalMs += playdate.getCurrentTimeMilliseconds() - pauseStartMs
+		pauseStartMs = nil
+	end
+end
+
+function playdate.gameWillPause() beginPause() end
+function playdate.gameWillResume() endPause() end
+function playdate.deviceWillLock() beginPause() end
+function playdate.deviceDidUnlock() endPause() end
+
 -- === Sound Effects ===
 local jumpSound = nil
 
@@ -181,7 +207,7 @@ local function createCarrot(x, y, isWhite)
 	local phase = math.random() * math.pi * 2
 	carrot.bounceTimer = playdate.timer.new(30, function()
 		if carrot and not carrot.removed then
-			local offset = math.sin(playdate.getCurrentTimeMilliseconds() / 400 + phase) * 2
+			local offset = math.sin(nowMs() / 400 + phase) * 2
 			carrot:moveTo(x, carrot.baseY + offset)
 		end
 	end)
@@ -272,7 +298,7 @@ local function spawnWhiteCarrot()
 	local carrot = createCarrot(x, y, true)
 	if carrot then
 		whiteCarrot = carrot
-		carrot.spawnTime = playdate.getCurrentTimeMilliseconds()
+		carrot.spawnTime = nowMs()
 	end
 end
 
@@ -283,7 +309,7 @@ local function removeWhiteCarrot()
 		if whiteCarrot.bounceTimer then whiteCarrot.bounceTimer:remove() end
 		whiteCarrot:remove()
 		whiteCarrot = nil
-		lastWhiteCarrotTime = playdate.getCurrentTimeMilliseconds()
+		lastWhiteCarrotTime = nowMs()
 		whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
 	end
 end
@@ -328,7 +354,7 @@ end
 
 math.randomseed(playdate.getSecondsSinceEpoch())
 spawnBlackCarrot()
-lastWhiteCarrotTime = playdate.getCurrentTimeMilliseconds()
+lastWhiteCarrotTime = nowMs()
 whiteCarrotSpawnDelay = 10000 + math.random(5000) -- initial delay 10-15 seconds
 
 -- === Bunny ===
@@ -351,17 +377,17 @@ local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
 local gameState = "mainmenu" -- "mainmenu" | "playing" | "dead" | "leaderboard" | "achievements"
-local startTimeMs = playdate.getCurrentTimeMilliseconds()
+local startTimeMs = nowMs()
 local elapsedTime = 0.0
 
 -- === Enemy spawn control ===
-local lastArrowSpawn = playdate.getCurrentTimeMilliseconds()
+local lastArrowSpawn = nowMs()
 local arrowSpawnInterval = 1500 -- ms (every 1.5s at start)
 
 -- Difficulty progression (simple): spawn faster over time
 local function getSpawnInterval()
 	-- cap min interval
-	local t = (playdate.getCurrentTimeMilliseconds() - startTimeMs) / 1000
+	local t = (nowMs() - startTimeMs) / 1000
 	local speedup = math.max(0, math.min(1000, math.floor(t * 40))) -- reduce interval slowly
 	return math.max(500, arrowSpawnInterval - speedup) -- min 500ms
 end
@@ -486,7 +512,7 @@ local function showNotification(achievement)
 	else
 		activeNotification = {
 			achievement = achievement,
-			startTime = playdate.getCurrentTimeMilliseconds(),
+			startTime = nowMs(),
 			duration = 3000 -- 3 seconds
 		}
 	end
@@ -494,7 +520,7 @@ end
 
 local function updateNotifications()
 	if activeNotification then
-		local now = playdate.getCurrentTimeMilliseconds()
+		local now = nowMs()
 		if now - activeNotification.startTime >= activeNotification.duration then
 			activeNotification = nil
 			-- Show next notification in queue if any
@@ -548,7 +574,7 @@ local function checkAchievement(id)
 	
 	if unlocked then
 		achievement.unlocked = true
-		achievement.unlockTime = playdate.getCurrentTimeMilliseconds()
+		achievement.unlockTime = nowMs()
 		saveAchievements()
 		showNotification(achievement)
 	end
@@ -562,6 +588,11 @@ local leaderboard = {} -- Array of {score, time, playerName, rank, date}
 local leaderboardScrollOffset = 0
 local achievementsScrollOffset = 0
 local maxLeaderboardEntries = 10
+
+-- Save local leaderboard to datastore
+local function saveLocalLeaderboard()
+	playdate.datastore.write("localLeaderboard", leaderboard)
+end
 
 -- Load local leaderboard from datastore
 local function loadLocalLeaderboard()
@@ -620,11 +651,6 @@ local function loadLocalLeaderboard()
 	else
 		leaderboard = {}
 	end
-end
-
--- Save local leaderboard to datastore
-local function saveLocalLeaderboard()
-	playdate.datastore.write("localLeaderboard", leaderboard)
 end
 
 -- Add a score to the local leaderboard
@@ -703,7 +729,7 @@ local function spawnArrowAt(x, vy)
 	a.sprite:add()
 	a.vx = 0
 	a.vy = vy or 2.5 -- same fall speed for all
-	a.startTime = playdate.getCurrentTimeMilliseconds() -- track when arrow was created
+	a.startTime = nowMs() -- track when arrow was created
 	a.slideDuration = 1000 -- slide animation takes 1 second
 	a.isSlidingIn = true -- flag to track if arrow is sliding in from top
 	table.insert(arrows, a)
@@ -724,7 +750,7 @@ end
 -------------------------------------------------------
 local function startFlashingEffect(obstacle, sprite)
 	obstacle.isFlashing = true
-	obstacle.flashStartTime = playdate.getCurrentTimeMilliseconds()
+	obstacle.flashStartTime = nowMs()
 	obstacle.flashDuration = 2000 -- 2 seconds
 	obstacle.flashVisible = true
 	
@@ -746,7 +772,7 @@ end
 
 local function updateFlashingEffect(obstacle, sprite)
 	if obstacle.isFlashing then
-		local now = playdate.getCurrentTimeMilliseconds()
+		local now = nowMs()
 		if now - obstacle.flashStartTime >= obstacle.flashDuration then
 			-- Flash complete, make obstacle active
 			obstacle.isFlashing = false
@@ -804,6 +830,7 @@ local function createSaw(x, y)
 	
 	local saw = {
 		sprite = sprite,
+		size = img:getSize(), -- unrotated width, for the flashing outline
 		state = "ground", -- "ground", "wallUp", "top", "wallDown"
 		x = x,
 		y = y,
@@ -896,7 +923,7 @@ local function createCannon(x, y, facing)
 		x = x,
 		y = y,
 		facing = facing,
-		lastFireTime = playdate.getCurrentTimeMilliseconds(),
+		lastFireTime = nowMs(),
 		isFlashing = false,
 		removed = false
 	}
@@ -936,6 +963,7 @@ local function createSpikeBall(type, x, y)
 	
 	local spikeBall = {
 		sprite = sprite,
+		size = img:getSize(), -- unrotated width, for the flashing outline
 		type = type,
 		x = x,
 		y = y,
@@ -1098,7 +1126,7 @@ local function updateCannon(cannon)
 	
 	-- Only fire if not flashing
 	if not cannon.isFlashing then
-		local now = playdate.getCurrentTimeMilliseconds()
+		local now = nowMs()
 		if now - cannon.lastFireTime >= CANNON_FIRE_INTERVAL then
 			cannon.lastFireTime = now
 			local direction = (cannon.facing == "right") and 1 or -1
@@ -1218,40 +1246,29 @@ end
 local function spawnWreckingBall()
 	if #wreckingBalls >= 3 then return end -- Max 3 wrecking balls
 	
-	-- Find a platform to attach to (simplified - check if platform is actually occupied)
+	-- Only use platforms that don't already have a wrecking ball
 	local availablePlatforms = {}
 	for _, plat in ipairs(platforms) do
-		local px, py = plat:getPosition()
-		-- Check if this platform is already used by an active wrecking ball
 		local used = false
 		for _, ball in ipairs(wreckingBalls) do
-			if ball and ball.sprite and not ball.removed then
-				if math.abs(ball.anchorX - px) < 5 and math.abs(ball.anchorY - py) < 5 then
-					used = true
-					break
-				end
+			if ball and not ball.removed and ball.platform == plat then
+				used = true
+				break
 			end
 		end
 		if not used then
-			table.insert(availablePlatforms, { x = px, y = py - 5 })
+			table.insert(availablePlatforms, plat)
 		end
 	end
-	
-	-- If no specific platforms available, pick a random one anyway (shouldn't happen, but safety)
-	if #availablePlatforms > 0 then
-		local platform = availablePlatforms[math.random(1, #availablePlatforms)]
-		local ball = createWreckingBall(platform.x, platform.y)
-		if ball then
-			table.insert(wreckingBalls, ball)
-		end
-	elseif #platforms > 0 then
-		-- Fallback: use any random platform
-		local plat = platforms[math.random(1, #platforms)]
-		local px, py = plat:getPosition()
-		local ball = createWreckingBall(px, py - 5)
-		if ball then
-			table.insert(wreckingBalls, ball)
-		end
+
+	if #availablePlatforms == 0 then return end
+
+	local plat = availablePlatforms[math.random(1, #availablePlatforms)]
+	local px, py = plat:getPosition()
+	local ball = createWreckingBall(px, py - 5)
+	if ball then
+		ball.platform = plat
+		table.insert(wreckingBalls, ball)
 	end
 end
 
@@ -1308,7 +1325,7 @@ end
 
 -- Unified obstacle spawn system
 local function trySpawnObstacle()
-	local now = playdate.getCurrentTimeMilliseconds()
+	local now = nowMs()
 	
 	-- Check if it's time to spawn
 	if now - lastObstacleSpawn >= obstacleSpawnInterval then
@@ -1352,6 +1369,23 @@ local function setFallSprite()
 	if facing == "right" then bunny:setImage(imgHopDownRight)
 	else bunny:setImage(imgHopDownLeft) end
 end
+
+-- Bunny's hitbox in screen space (its collide rect, not the whole image)
+local function getBunnyHitRect()
+	local bx, by = bunny:getBounds()
+	local r = bunny:getCollideRect()
+	return playdate.geometry.rect.new(bx + r.x, by + r.y, r.width, r.height)
+end
+
+-- Fixed-size square around a sprite's center; unlike getBounds, it doesn't grow when the sprite rotates
+local function centeredRect(sprite, size)
+	local x, y = sprite:getPosition()
+	return playdate.geometry.rect.new(x - size / 2, y - size / 2, size, size)
+end
+
+local SAW_HITBOX = 24 * 0.8
+local WRECKING_BALL_HITBOX = 20 * 0.8
+local SPIKE_BALL_HITBOX = 18 * 0.8
 
 -- reset everything for restart
 local function restartGame()
@@ -1427,7 +1461,7 @@ local function restartGame()
 	end
 
 	carrotCount = 0
-	startTimeMs = playdate.getCurrentTimeMilliseconds()
+	startTimeMs = nowMs()
 	lastArrowSpawn = startTimeMs
 	lastObstacleSpawn = 0 -- Reset to trigger immediate spawn
 	obstacleSpawnInterval = 0 -- Will be set on first spawn
@@ -1441,13 +1475,16 @@ local function restartGame()
 	bunny:moveTo(SCREEN_W / 2, GROUND_TOP)
 	setStandingSprite()
 	spawnBlackCarrot()
-	lastWhiteCarrotTime = playdate.getCurrentTimeMilliseconds()
+	lastWhiteCarrotTime = nowMs()
 	whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
 	-- Reset achievement tracking
 	carrotCollectionTimes = {}
 end
 
 local function die()
+	-- Several hazards can hit in the same frame; only the first one counts
+	if gameState ~= "playing" then return end
+
 	-- particle burst at bunny
 	local bx, by, bwB, bhB = bunny:getBounds()
 	spawnParticles(bx + bwB/2, by + bhB/2)
@@ -1484,7 +1521,7 @@ function playdate.update()
 
 	-- update timer (elapsed time) regardless of paused/dead for display
 	if gameState == "playing" then
-		elapsedTime = (playdate.getCurrentTimeMilliseconds() - startTimeMs) / 1000.0
+		elapsedTime = (nowMs() - startTimeMs) / 1000.0
 	end
 
 	-- Update notifications
@@ -1502,7 +1539,7 @@ function playdate.update()
 				-- Reset current stats and start game
 				carrotCount = 0
 				elapsedTime = 0.0
-				startTimeMs = playdate.getCurrentTimeMilliseconds()
+				startTimeMs = nowMs()
 				gameState = "playing"
 				restartGame()
 			elseif menuSelection == 2 then
@@ -1516,7 +1553,7 @@ function playdate.update()
 			-- Reset current stats and start game
 			carrotCount = 0
 			elapsedTime = 0.0
-			startTimeMs = playdate.getCurrentTimeMilliseconds()
+			startTimeMs = nowMs()
 			gameState = "playing"
 			restartGame()
 		end
@@ -1724,7 +1761,7 @@ function playdate.update()
 
 		-- Switch between hop and hopdown when moving on ground (after ground collision check)
 		if moved and isOnGround then
-			local currentTime = playdate.getCurrentTimeMilliseconds()
+			local currentTime = nowMs()
 			-- Initialize walking animation if just started moving
 			if lastWalkAnimationTime == 0 then
 				useHopDown = false
@@ -1760,7 +1797,7 @@ function playdate.update()
 					-- particles
 					spawnParticles(cx + cw/2, cy + ch/2)
 
-					local now = playdate.getCurrentTimeMilliseconds()
+					local now = nowMs()
 					if c.isWhite then
 						carrotCount += 3
 						-- Track 3 carrot collections for white carrot
@@ -1789,6 +1826,7 @@ function playdate.update()
 					-- Check speed achievements
 					checkAchievement("speed_collector_5")
 					checkAchievement("speed_collector_10")
+					checkAchievement("carrot_master")
 				end
 			end
 		end
@@ -1807,7 +1845,7 @@ function playdate.update()
 				carrotCount += 3
 				
 				-- Track 3 carrot collections for white carrot
-				local now = playdate.getCurrentTimeMilliseconds()
+				local now = nowMs()
 				table.insert(carrotCollectionTimes, now)
 				table.insert(carrotCollectionTimes, now)
 				table.insert(carrotCollectionTimes, now)
@@ -1820,6 +1858,7 @@ function playdate.update()
 				-- Check speed achievements
 				checkAchievement("speed_collector_5")
 				checkAchievement("speed_collector_10")
+				checkAchievement("carrot_master")
 				
 				removeWhiteCarrot()
 			end
@@ -1827,7 +1866,7 @@ function playdate.update()
 
 		-- White carrot timeout check (8 seconds)
 		if whiteCarrot and not whiteCarrot.removed then
-			local now = playdate.getCurrentTimeMilliseconds()
+			local now = nowMs()
 			if now - whiteCarrot.spawnTime >= 8000 then
 				removeWhiteCarrot()
 			end
@@ -1835,7 +1874,7 @@ function playdate.update()
 
 		-- White carrot spawn check (10-15 seconds after last one disappeared)
 		if not whiteCarrot then
-			local now = playdate.getCurrentTimeMilliseconds()
+			local now = nowMs()
 			if now - lastWhiteCarrotTime >= whiteCarrotSpawnDelay then
 				spawnWhiteCarrot()
 			end
@@ -1844,7 +1883,7 @@ function playdate.update()
 		---------------------------------------------------------------------
 
 		-- spawn arrows over time
-		local now = playdate.getCurrentTimeMilliseconds()
+		local now = nowMs()
 		if now - lastArrowSpawn >= getSpawnInterval() then
 			lastArrowSpawn = now
 			spawnRandomArrow()
@@ -1854,7 +1893,7 @@ function playdate.update()
 		for i = #arrows, 1, -1 do
 			local a = arrows[i]
 			if a and a.sprite then
-				local now = playdate.getCurrentTimeMilliseconds()
+				local now = nowMs()
 				local ax, ay = a.sprite:getPosition()
 				
 				-- First phase: slide in from top (takes 1 second)
@@ -1889,9 +1928,8 @@ function playdate.update()
 				elseif not a.isSlidingIn then
 					-- Only check collision if arrow is falling (not sliding in)
 					-- check collision with bunny
-					local bx, by, bwB, bhB = bunny:getBounds()
 					local axB, ayB, awB, ahB = a.sprite:getBounds()
-					local bunnyRect = playdate.geometry.rect.new(bx, by, bwB, bhB)
+					local bunnyRect = getBunnyHitRect()
 					local arrowRect = playdate.geometry.rect.new(axB, ayB, awB, ahB)
 					if bunnyRect:intersects(arrowRect) then
 						-- collide: die
@@ -1912,7 +1950,7 @@ function playdate.update()
 		---------------------------------------------------------------------
 		if lastObstacleSpawn == 0 then
 			-- Initialize spawn timer and spawn immediately on first frame
-			lastObstacleSpawn = playdate.getCurrentTimeMilliseconds()
+			lastObstacleSpawn = nowMs()
 			obstacleSpawnInterval = 13000 + math.random(4000) -- 13-17 seconds
 			-- Spawn first obstacle immediately
 			local availableTypes = {}
@@ -1995,23 +2033,13 @@ function playdate.update()
 		---------------------------------------------------------------------
 		-- Obstacle collision detection
 		---------------------------------------------------------------------
-		local bx, by, bwB, bhB = bunny:getBounds()
-		local bunnyRect = playdate.geometry.rect.new(bx, by, bwB, bhB)
+		local bunnyRect = getBunnyHitRect()
 
 		-- Check collision with saws
 		for i = #saws, 1, -1 do
 			local saw = saws[i]
 			if saw and saw.sprite and not saw.isFlashing then
-				-- Use collision rectangle instead of full bounds for more accurate hitbox
-				local sx, sy = saw.sprite:getPosition()
-				local sawRadius = 12 * 0.8 -- Match the collision rect size (80% of visual)
-				local sawRect = playdate.geometry.rect.new(
-					sx - sawRadius, 
-					sy - sawRadius, 
-					sawRadius * 2, 
-					sawRadius * 2
-				)
-				if bunnyRect:intersects(sawRect) then
+				if bunnyRect:intersects(centeredRect(saw.sprite, SAW_HITBOX)) then
 					die()
 					break
 				end
@@ -2022,9 +2050,7 @@ function playdate.update()
 		for i = #wreckingBalls, 1, -1 do
 			local ball = wreckingBalls[i]
 			if ball and ball.sprite and not ball.isFlashing then
-				local wx, wy, ww, wh = ball.sprite:getBounds()
-				local ballRect = playdate.geometry.rect.new(wx, wy, ww, wh)
-				if bunnyRect:intersects(ballRect) then
+				if bunnyRect:intersects(centeredRect(ball.sprite, WRECKING_BALL_HITBOX)) then
 					die()
 					break
 				end
@@ -2035,9 +2061,7 @@ function playdate.update()
 		for i = #spikeBalls, 1, -1 do
 			local spikeBall = spikeBalls[i]
 			if spikeBall and spikeBall.sprite and not spikeBall.isFlashing then
-				local spx, spy, spw, sph = spikeBall.sprite:getBounds()
-				local spikeRect = playdate.geometry.rect.new(spx, spy, spw, sph)
-				if bunnyRect:intersects(spikeRect) then
+				if bunnyRect:intersects(centeredRect(spikeBall.sprite, SPIKE_BALL_HITBOX)) then
 					die()
 					break
 				end
@@ -2075,17 +2099,6 @@ function playdate.update()
 			if projectile and projectile.sprite then
 				-- Skip collision if bunny is standing on a platform
 				if not isBunnyOnPlatform() then
-					-- Use bunny's collision rectangle (not full bounds) for cannon projectiles
-					local bunnyCollideRect = bunny:getCollideRect()
-					local bunnyBoundsX, bunnyBoundsY = bunny:getBounds()
-					-- Calculate bunny collision rect: bounds top-left + collision rect offset
-					local bunnyCollisionRect = playdate.geometry.rect.new(
-						bunnyBoundsX + bunnyCollideRect.x,
-						bunnyBoundsY + bunnyCollideRect.y,
-						bunnyCollideRect.width,
-						bunnyCollideRect.height
-					)
-					
 					-- Use projectile's collision rect
 					local projCollideRect = projectile.sprite:getCollideRect()
 					local projBoundsX, projBoundsY = projectile.sprite:getBounds()
@@ -2096,7 +2109,7 @@ function playdate.update()
 						projCollideRect.height
 					)
 					
-					if bunnyCollisionRect:intersects(projRect) then
+					if bunnyRect:intersects(projRect) then
 						projectile.sprite:remove()
 						table.remove(cannonProjectiles, i)
 						die()
@@ -2140,10 +2153,9 @@ function playdate.update()
 		-- Draw outlines for flashing obstacles
 		for _, saw in ipairs(saws) do
 			if saw and saw.sprite and saw.isFlashing then
-				local sx, sy, sw, sh = saw.sprite:getBounds()
 				gfx.setColor(gfx.kColorBlack)
 				gfx.setLineWidth(2)
-				gfx.drawRect(sx, sy, sw, sh)
+				gfx.drawRect(centeredRect(saw.sprite, saw.size))
 			end
 		end
 
@@ -2167,10 +2179,9 @@ function playdate.update()
 
 		for _, spikeBall in ipairs(spikeBalls) do
 			if spikeBall and spikeBall.sprite and spikeBall.isFlashing then
-				local spx, spy, spw, sph = spikeBall.sprite:getBounds()
 				gfx.setColor(gfx.kColorBlack)
 				gfx.setLineWidth(2)
-				gfx.drawRect(spx, spy, spw, sph)
+				gfx.drawRect(centeredRect(spikeBall.sprite, spikeBall.size))
 			end
 		end
 	end
@@ -2182,32 +2193,6 @@ function playdate.update()
 		gfx.drawText(formatTime(elapsedTime), 8, 8)
 		-- Carrot count at top-right
 		gfx.drawText("Carrots: " .. carrotCount, SCREEN_W - 100, 8)
-		
-		-- Draw achievement notification
-		if activeNotification then
-			local notif = activeNotification.achievement
-			local notifFont = gfx.getFont()
-			local notifY = 30
-			local padding = 8
-			local textWidth = notifFont:getTextWidth(notif.name)
-			local descWidth = notifFont:getTextWidth(notif.description)
-			local boxWidth = math.max(textWidth, descWidth) + padding * 2
-			local boxHeight = 40
-			local boxX = (SCREEN_W - boxWidth) / 2
-			
-			-- Draw notification background
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(boxX, notifY, boxWidth, boxHeight)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.setLineWidth(2)
-			gfx.drawRect(boxX, notifY, boxWidth, boxHeight)
-			
-			-- Draw achievement text
-			gfx.setColor(gfx.kColorWhite)
-			gfx.drawText(notif.name, boxX + padding, notifY + 6)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.drawText(notif.description, boxX + padding, notifY + 22)
-		end
 	end
 	
 	-- draw death/menu overlays
@@ -2520,9 +2505,11 @@ function playdate.update()
 						-- Draw checkmark or unlocked indicator
 						gfx.setColor(gfx.kColorBlack)
 						gfx.fillRect(statusX, y + 4, 12, 12)
+						-- White checkmark drawn with lines (drawText ignores setColor, and the font may lack ✓)
 						gfx.setColor(gfx.kColorWhite)
-						-- Simple checkmark
-						gfx.drawText("✓", statusX + 2, y + 2)
+						gfx.setLineWidth(2)
+						gfx.drawLine(statusX + 2, y + 10, statusX + 5, y + 13)
+						gfx.drawLine(statusX + 5, y + 13, statusX + 10, y + 6)
 					else
 						-- Draw locked indicator
 						gfx.setColor(gfx.kColorBlack)
@@ -2581,5 +2568,30 @@ function playdate.update()
 		local instText = "A/B: Back"
 		local instWidth = font:getTextWidth(instText)
 		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
+	end
+
+	-- Achievement notification (drawn last so it shows on every screen)
+	if activeNotification then
+		local notif = activeNotification.achievement
+		local notifY = 30
+		local padding = 8
+		local textWidth = font:getTextWidth(notif.name)
+		local descWidth = font:getTextWidth(notif.description)
+		local boxWidth = math.max(textWidth, descWidth) + padding * 2
+		local boxHeight = 40
+		local boxX = (SCREEN_W - boxWidth) / 2
+
+		-- Draw notification background
+		gfx.setColor(gfx.kColorBlack)
+		gfx.fillRect(boxX, notifY, boxWidth, boxHeight)
+		gfx.setColor(gfx.kColorWhite)
+		gfx.setLineWidth(2)
+		gfx.drawRect(boxX, notifY, boxWidth, boxHeight)
+
+		-- Draw achievement text in white (drawText uses the image draw mode, not setColor)
+		gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
+		gfx.drawText(notif.name, boxX + padding, notifY + 6)
+		gfx.drawText(notif.description, boxX + padding, notifY + 22)
+		gfx.setImageDrawMode(gfx.kDrawModeCopy)
 	end
 end

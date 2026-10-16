@@ -1,6 +1,7 @@
 import "CoreLibs/graphics"
 import "CoreLibs/sprites"
 import "CoreLibs/timer"
+import "CoreLibs/keyboard"
 import "config"
 import "online"
 

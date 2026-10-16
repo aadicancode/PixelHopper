@@ -54,7 +54,11 @@ local GROUND_TOP = GROUND_CENTER_Y - 14
 
 -- === Physics Constants ===
 local GRAVITY = 0.45
+local FALL_GRAVITY_MULTIPLIER = 1.6 -- gravity is stronger on the way down
+local MAX_FALL_SPEED = 9 -- terminal fall speed (px per frame)
 local JUMP_VELOCITY = -5.5
+local JUMP_BOOST_FRAMES = 14 -- frames that holding jump adds lift (max jump ~59px)
+local COYOTE_FRAMES = 4 -- frames you can still jump after walking off a ledge (~0.13s)
 local MOVE_SPEED = 3
 local MOVE_ACCELERATION = 0.5 -- horizontal acceleration (increased for more responsive feel)
 local MOVE_DECELERATION = 0.55 -- ground friction / viscosity (increased for less slipperiness)
@@ -372,6 +376,7 @@ local xVelocity = 0
 local isOnGround = true
 local facing = "right"
 local jumpPressedTime = 0
+local coyoteFrames = 0
 local useHopDown = false  -- Track which walking animation to use (hop or hopdown)
 local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
@@ -1398,47 +1403,14 @@ local function projectileHitRect(projectile)
 	return playdate.geometry.rect.new(x + r.x, y + r.y, r.width, r.height)
 end
 
--- Hitboxes of every hazard that can currently kill the bunny
-local function getHazardHitRects()
-	local rects = {}
-	for _, a in ipairs(arrows) do
-		if a.sprite and not a.isSlidingIn then table.insert(rects, arrowHitRect(a)) end
-	end
-	for _, saw in ipairs(saws) do
-		if saw.sprite and not saw.removed and not saw.isFlashing then
-			table.insert(rects, centeredRect(saw.sprite, SAW_HITBOX))
-		end
-	end
-	for _, ball in ipairs(wreckingBalls) do
-		if ball.sprite and not ball.removed and not ball.isFlashing then
-			table.insert(rects, centeredRect(ball.sprite, WRECKING_BALL_HITBOX))
-		end
-	end
-	for _, spikeBall in ipairs(spikeBalls) do
-		if spikeBall.sprite and not spikeBall.removed and not spikeBall.isFlashing then
-			table.insert(rects, centeredRect(spikeBall.sprite, SPIKE_BALL_HITBOX))
-		end
-	end
-	for _, projectile in ipairs(cannonProjectiles) do
-		if projectile.sprite and not projectile.removed then
-			table.insert(rects, projectileHitRect(projectile))
-		end
-	end
-	return rects
-end
-
 -- === Death sequence ===
--- On death the world freezes with hitboxes shown, then the bunny flips over and falls off screen
-local DEATH_HITBOX_MS = 500
+-- On death the world freezes while the bunny flips over, pops up and falls off screen
 local DEATH_FALL_MAX_MS = 2000
 local DEATH_POP_VELOCITY = -6
 local imgDeadRight = imgRight:scaledImage(1, -1)
 local imgDeadLeft = imgLeft:scaledImage(1, -1)
 local deathStartMs = 0
-local deathFalling = false
 local deathVelocity = 0
-local deathBunnyRect = nil
-local deathKillerRect = nil
 
 -- reset everything for restart
 local function restartGame()
@@ -1525,9 +1497,7 @@ local function restartGame()
 	isOnGround = true
 	useHopDown = false
 	lastWalkAnimationTime = 0
-	deathFalling = false
-	deathBunnyRect = nil
-	deathKillerRect = nil
+	coyoteFrames = 0
 	bunny:setZIndex(0)
 	bunny:moveTo(SCREEN_W / 2, GROUND_TOP)
 	setStandingSprite()
@@ -1538,15 +1508,17 @@ local function restartGame()
 	carrotCollectionTimes = {}
 end
 
-local function die(killerRect)
+local function die()
 	-- Several hazards can hit in the same frame; only the first one counts
 	if gameState ~= "playing" then return end
 
-	-- Freeze the scene and remember what hit what, for the hitbox display
+	-- Start the death animation: flip upside down, pop up, fall off the bottom of the screen
 	deathStartMs = nowMs()
-	deathFalling = false
-	deathBunnyRect = getBunnyHitRect()
-	deathKillerRect = killerRect
+	deathVelocity = DEATH_POP_VELOCITY
+	local bx, by, bwB, bhB = bunny:getBounds()
+	spawnParticles(bx + bwB/2, by + bhB/2)
+	bunny:setImage(facing == "right" and imgDeadRight or imgDeadLeft)
+	bunny:setZIndex(1000) -- fall in front of the ground and platforms
 
 	-- store last run stats (saved now, so quitting mid-animation still records the run)
 	lastScore = carrotCount
@@ -1567,47 +1539,13 @@ local function die(killerRect)
 end
 
 local function updateDying()
-	local elapsed = nowMs() - deathStartMs
-
-	-- Phase 1: frozen, hitboxes drawn later in the frame
-	if elapsed < DEATH_HITBOX_MS then return end
-
-	-- Phase 2: flip upside down, pop up, fall off the bottom of the screen
-	if not deathFalling then
-		deathFalling = true
-		deathVelocity = DEATH_POP_VELOCITY
-		local bx, by, bwB, bhB = bunny:getBounds()
-		spawnParticles(bx + bwB/2, by + bhB/2)
-		bunny:setImage(facing == "right" and imgDeadRight or imgDeadLeft)
-		bunny:setZIndex(1000) -- fall in front of the ground and platforms
-	end
-
-	deathVelocity += GRAVITY
+	deathVelocity += (deathVelocity >= 0) and GRAVITY * FALL_GRAVITY_MULTIPLIER or GRAVITY
 	bunny:moveBy(0, deathVelocity)
 
 	local _, by = bunny:getPosition()
 	local _, bunnyHeight = bunny:getSize()
-	if by - bunnyHeight > SCREEN_H or elapsed >= DEATH_HITBOX_MS + DEATH_FALL_MAX_MS then
+	if by - bunnyHeight > SCREEN_H or nowMs() - deathStartMs >= DEATH_FALL_MAX_MS then
 		gameState = "dead"
-	end
-end
-
-local function drawDeathHitboxes()
-	gfx.setLineWidth(1)
-	gfx.setColor(gfx.kColorBlack)
-	for _, rect in ipairs(getHazardHitRects()) do
-		gfx.drawRect(rect)
-	end
-	-- Shade the bunny and whatever killed it
-	for _, rect in ipairs({ deathBunnyRect, deathKillerRect }) do
-		if rect then
-			gfx.setDitherPattern(0.5, gfx.image.kDitherTypeBayer2x2)
-			gfx.fillRect(rect)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.setLineWidth(2)
-			gfx.drawRect(rect)
-			gfx.setLineWidth(1)
-		end
 	end
 end
 
@@ -1764,9 +1702,10 @@ function playdate.update()
 		elseif bx > RIGHT_BOUND then bunny:moveTo(RIGHT_BOUND, by) end
 
 		-- Jump with acceleration
-		if (playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonUp)) and isOnGround then
+		if (playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonUp)) and (isOnGround or coyoteFrames > 0) then
 			yVelocity = JUMP_VELOCITY -- initial jump velocity
 			isOnGround = false
+			coyoteFrames = 0 -- grace is used up once you jump
 			jumpPressedTime = 0
 			setHopSprite()
 			if jumpSound then
@@ -1777,7 +1716,7 @@ function playdate.update()
 		-- Hold jump for additional lift
 		if (playdate.buttonIsPressed(playdate.kButtonA) or playdate.buttonIsPressed(playdate.kButtonUp)) and not isOnGround and yVelocity < 0 then
 			jumpPressedTime += 1
-			if jumpPressedTime < 12 then
+			if jumpPressedTime < JUMP_BOOST_FRAMES then
 				yVelocity -= 0.25 -- accelerate upward (increased for higher jump)
 			else
 				yVelocity += 0.15 -- start decelerating
@@ -1787,7 +1726,12 @@ function playdate.update()
 		-- Gravity + platform collisions
 		if not isOnGround then
 			local wasRising = yVelocity < 0
-			yVelocity += GRAVITY
+			-- Fall faster than you rise, up to a terminal speed
+			if yVelocity >= 0 then
+				yVelocity = math.min(MAX_FALL_SPEED, yVelocity + GRAVITY * FALL_GRAVITY_MULTIPLIER)
+			else
+				yVelocity += GRAVITY
+			end
 			local steps = math.ceil(math.abs(yVelocity))
 			local stepSize = yVelocity / steps
 
@@ -1863,6 +1807,13 @@ function playdate.update()
 			if not moved then
 				setStandingSprite()
 			end
+		end
+
+		-- Coyote time: keep a few frames of jump grace after walking off a ledge
+		if isOnGround then
+			coyoteFrames = COYOTE_FRAMES
+		elseif coyoteFrames > 0 then
+			coyoteFrames -= 1
 		end
 
 		-- Switch between hop and hopdown when moving on ground (after ground collision check)
@@ -2036,8 +1987,8 @@ function playdate.update()
 					-- check collision with bunny
 					local arrowRect = arrowHitRect(a)
 					if getBunnyHitRect():intersects(arrowRect) then
-						-- Leave the arrow in place so it shows during the death freeze
-						die(arrowRect)
+						-- Leave the arrow in place so it is visible while the bunny falls
+						die()
 						break
 					end
 				end
@@ -2142,7 +2093,7 @@ function playdate.update()
 			if saw and saw.sprite and not saw.isFlashing then
 				local sawRect = centeredRect(saw.sprite, SAW_HITBOX)
 				if bunnyRect:intersects(sawRect) then
-					die(sawRect)
+					die()
 					break
 				end
 			end
@@ -2154,7 +2105,7 @@ function playdate.update()
 			if ball and ball.sprite and not ball.isFlashing then
 				local ballRect = centeredRect(ball.sprite, WRECKING_BALL_HITBOX)
 				if bunnyRect:intersects(ballRect) then
-					die(ballRect)
+					die()
 					break
 				end
 			end
@@ -2166,7 +2117,7 @@ function playdate.update()
 			if spikeBall and spikeBall.sprite and not spikeBall.isFlashing then
 				local spikeRect = centeredRect(spikeBall.sprite, SPIKE_BALL_HITBOX)
 				if bunnyRect:intersects(spikeRect) then
-					die(spikeRect)
+					die()
 					break
 				end
 			end
@@ -2205,8 +2156,8 @@ function playdate.update()
 				if not isBunnyOnPlatform() then
 					local projRect = projectileHitRect(projectile)
 					if bunnyRect:intersects(projRect) then
-						-- Leave the projectile in place so it shows during the death freeze
-						die(projRect)
+						-- Leave the projectile in place so it is visible while the bunny falls
+						die()
 						break
 					end
 				end
@@ -2275,11 +2226,6 @@ function playdate.update()
 				gfx.drawRect(centeredRect(spikeBall.sprite, spikeBall.size))
 			end
 		end
-	end
-
-	-- Show hitboxes for the first part of the death sequence
-	if gameState == "dying" and not deathFalling then
-		drawDeathHitboxes()
 	end
 
 	-- draw timer and carrot count (during gameplay and the death sequence)

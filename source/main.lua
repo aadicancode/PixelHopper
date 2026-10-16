@@ -1375,11 +1375,22 @@ local function setFallSprite()
 	else bunny:setImage(imgHopDownLeft) end
 end
 
--- Bunny's hitbox in screen space (its collide rect, not the whole image)
+-- How far the hurtbox is pulled in from the bunny's 20x22 collide rect (gives a 14x15 hurtbox).
+-- Only hazards use this; landing on platforms still uses the full collide rect.
+local BUNNY_HURTBOX_INSET_SIDES = 3
+local BUNNY_HURTBOX_INSET_TOP = 5
+local BUNNY_HURTBOX_INSET_BOTTOM = 2
+
+-- Bunny's hurtbox in screen space: a forgiving box inside its collide rect
 local function getBunnyHitRect()
 	local bx, by = bunny:getBounds()
 	local r = bunny:getCollideRect()
-	return playdate.geometry.rect.new(bx + r.x, by + r.y, r.width, r.height)
+	return playdate.geometry.rect.new(
+		bx + r.x + BUNNY_HURTBOX_INSET_SIDES,
+		by + r.y + BUNNY_HURTBOX_INSET_TOP,
+		r.width - BUNNY_HURTBOX_INSET_SIDES * 2,
+		r.height - BUNNY_HURTBOX_INSET_TOP - BUNNY_HURTBOX_INSET_BOTTOM
+	)
 end
 
 -- Fixed-size square around a sprite's center; unlike getBounds, it doesn't grow when the sprite rotates

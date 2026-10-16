@@ -1,6 +1,8 @@
 import "CoreLibs/graphics"
 import "CoreLibs/sprites"
 import "CoreLibs/timer"
+import "config"
+import "online"
 
 local gfx = playdate.graphics
 
@@ -418,6 +420,10 @@ local function loadPlayerName()
 	end
 end
 
+local function savePlayerName()
+	playdate.datastore.write(playerName, "playerName")
+end
+
 loadPlayerName()
 
 -- === High score storage (using Playdate datastore) ===
@@ -434,7 +440,7 @@ local function loadHighScore()
 end
 
 local function saveHighScore()
-	playdate.datastore.write("highScore", highScore)
+	playdate.datastore.write(highScore, "highScore")
 end
 
 local function loadHighTime()
@@ -445,7 +451,7 @@ local function loadHighTime()
 end
 
 local function saveHighTime()
-	playdate.datastore.write("highTime", highTime)
+	playdate.datastore.write(highTime, "highTime")
 end
 
 loadHighScore()
@@ -503,7 +509,7 @@ end
 
 -- Save achievements to datastore
 local function saveAchievements()
-	playdate.datastore.write("achievements", achievements)
+	playdate.datastore.write(achievements, "achievements")
 end
 
 -- Notification system
@@ -596,7 +602,7 @@ local maxLeaderboardEntries = 10
 
 -- Save local leaderboard to datastore
 local function saveLocalLeaderboard()
-	playdate.datastore.write("localLeaderboard", leaderboard)
+	playdate.datastore.write(leaderboard, "localLeaderboard")
 end
 
 -- Load local leaderboard from datastore
@@ -718,6 +724,30 @@ syncHighScoreFromLeaderboard()
 
 -- === UI / Menu selection for death screen ===
 local menuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS" }
+local mainMenuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS", "CHANGE NAME" }
+
+-- === Leaderboard screen (local and online tabs) ===
+local leaderboardTab = "local" -- "local" | "online"
+
+local function openLeaderboard()
+	gameState = "leaderboard"
+	leaderboardTab = "local"
+	leaderboardScrollOffset = 0
+	OnlineLeaderboard.refresh() -- start loading so the online tab is ready when opened
+end
+
+-- === Player name entry (system keyboard) ===
+local function openNameEntry()
+	playdate.keyboard.keyboardWillHideCallback = function(confirmed)
+		if not confirmed then return end
+		local name = string.match(playdate.keyboard.text or "", "^%s*(.-)%s*$")
+		if name and #name > 0 then
+			playerName = string.sub(name, 1, 16)
+			savePlayerName()
+		end
+	end
+	playdate.keyboard.show(playerName)
+end
 local menuSelection = 1
 
 -- === Utility: spawn an arrow at x, with vy ===
@@ -1541,6 +1571,9 @@ local function die()
 	-- Add score to local leaderboard (always, so player can see their history)
 	addScoreToLocalLeaderboard(carrotCount, elapsedTime)
 
+	-- Queue the run for the online leaderboard (uploads once the death screen is up)
+	OnlineLeaderboard.submitScore(playerName, carrotCount, elapsedTime)
+
 	-- Sync high score and high time with leaderboard (leaderboard is now sorted)
 	-- This ensures highScore/highTime always match the top leaderboard entry
 	syncHighScoreFromLeaderboard()
@@ -1580,13 +1613,20 @@ function playdate.update()
 	-- Update notifications
 	updateNotifications()
 
+	-- Online leaderboard network work happens only outside gameplay, so it can't cause hitches
+	if gameState ~= "playing" and gameState ~= "dying" then
+		OnlineLeaderboard.update()
+	end
+
 	-- handle input for menu/state
-	if gameState == "mainmenu" then
+	if playdate.keyboard.isVisible() then
+		-- The name-entry keyboard has input focus
+	elseif gameState == "mainmenu" then
 		-- Up/Down to navigate menu, A to select, B to restart
 		if playdate.buttonJustPressed(playdate.kButtonUp) then
 			menuSelection = math.max(1, menuSelection - 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
-			menuSelection = math.min(#menuOptions, menuSelection + 1)
+			menuSelection = math.min(#mainMenuOptions, menuSelection + 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonA) then
 			if menuSelection == 1 then
 				-- Reset current stats and start game
@@ -1596,11 +1636,12 @@ function playdate.update()
 				gameState = "playing"
 				restartGame()
 			elseif menuSelection == 2 then
-				-- View leaderboard
-				gameState = "leaderboard"
+				openLeaderboard()
 			elseif menuSelection == 3 then
 				-- View achievements
 				gameState = "achievements"
+			elseif menuSelection == 4 then
+				openNameEntry()
 			end
 		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			-- Reset current stats and start game
@@ -1620,8 +1661,7 @@ function playdate.update()
 			if menuSelection == 1 then
 				restartGame()
 			elseif menuSelection == 2 then
-				-- View leaderboard (local leaderboard is always available)
-				gameState = "leaderboard"
+				openLeaderboard()
 			elseif menuSelection == 3 then
 				-- View achievements
 				gameState = "achievements"
@@ -1638,11 +1678,18 @@ function playdate.update()
 				gameState = "mainmenu"
 			end
 		end
+		-- Left/Right to switch between the local and online lists
+		if playdate.buttonJustPressed(playdate.kButtonLeft) or playdate.buttonJustPressed(playdate.kButtonRight) then
+			leaderboardTab = (leaderboardTab == "local") and "online" or "local"
+			leaderboardScrollOffset = 0
+			if leaderboardTab == "online" then OnlineLeaderboard.refresh() end
+		end
 		-- Up/Down to scroll (if needed)
+		local shownEntries = (leaderboardTab == "online") and OnlineLeaderboard.entries or leaderboard
 		if playdate.buttonJustPressed(playdate.kButtonUp) then
 			leaderboardScrollOffset = math.max(0, leaderboardScrollOffset - 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
-			leaderboardScrollOffset = math.min(math.max(0, #leaderboard - 7), leaderboardScrollOffset + 1)
+			leaderboardScrollOffset = math.min(math.max(0, #shownEntries - 7), leaderboardScrollOffset + 1)
 		end
 	elseif gameState == "achievements" then
 		-- A or B to go back
@@ -2333,7 +2380,18 @@ function playdate.update()
 		end
 		gfx.setColor(gfx.kColorBlack)
 		gfx.drawText(achievementsText, SCREEN_W / 2 - achievementsWidth / 2, menuY)
-		
+
+		-- CHANGE NAME option
+		menuY = menuY + menuLineHeight
+		local changeNameText = "CHANGE NAME"
+		local changeNameWidth = font:getTextWidth(changeNameText)
+		if menuSelection == 4 then
+			gfx.setColor(gfx.kColorBlack)
+			gfx.fillRect(SCREEN_W / 2 - changeNameWidth / 2 - 8, menuY, 3, 16)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawText(changeNameText, SCREEN_W / 2 - changeNameWidth / 2, menuY)
+
 		-- Instructions (moved to very bottom with more space)
 		local instText = "A: Select  B: Start"
 		local instWidth = font:getTextWidth(instText)
@@ -2425,20 +2483,36 @@ function playdate.update()
 		
 		-- Title
 		gfx.setColor(gfx.kColorBlack)
-		local titleText = "LEADERBOARD"
+		local isOnline = leaderboardTab == "online"
+		local titleText = isOnline and "< ONLINE LEADERBOARD >" or "< LOCAL LEADERBOARD >"
 		local titleWidth = font:getTextWidth(titleText)
 		gfx.drawText(titleText, SCREEN_W / 2 - titleWidth / 2, 10)
-		
+
 		-- Draw leaderboard entries
+		local entries = isOnline and OnlineLeaderboard.entries or leaderboard
 		local startY = 40
 		local lineHeight = 22
 		local maxVisible = 7
-		
-		if #leaderboard == 0 then
+
+		-- What to say when there's nothing to list
+		local noDataText = nil
+		if isOnline then
+			if not OnlineLeaderboard.isConfigured() then
+				noDataText = "Online leaderboard isn't set up"
+			elseif OnlineLeaderboard.status == "error" and #entries == 0 then
+				noDataText = "Couldn't connect: " .. (OnlineLeaderboard.message or "unknown error")
+			elseif OnlineLeaderboard.status ~= "ready" and #entries == 0 then
+				noDataText = "Loading..."
+			elseif #entries == 0 then
+				noDataText = "No online scores yet"
+			end
+		elseif #entries == 0 then
+			noDataText = "No scores yet"
+		end
+
+		if noDataText then
 			gfx.setColor(gfx.kColorBlack)
-			local noDataText = "No scores yet"
-			local noDataWidth = font:getTextWidth(noDataText)
-			gfx.drawText(noDataText, SCREEN_W / 2 - noDataWidth / 2, startY + 50)
+			gfx.drawTextInRect(noDataText, 20, startY + 50, SCREEN_W - 40, 60, nil, nil, kTextAlignment.center)
 		else
 			-- Draw header with better spacing
 			gfx.setColor(gfx.kColorBlack)
@@ -2454,10 +2528,10 @@ function playdate.update()
 			
 			-- Draw entries
 			local visibleStart = leaderboardScrollOffset + 1
-			local visibleEnd = math.min(visibleStart + maxVisible - 1, #leaderboard)
-			
+			local visibleEnd = math.min(visibleStart + maxVisible - 1, #entries)
+
 			for i = visibleStart, visibleEnd do
-				local entry = leaderboard[i]
+				local entry = entries[i]
 				if entry then
 					local y = startY + (i - visibleStart + 1) * lineHeight
 					
@@ -2506,17 +2580,20 @@ function playdate.update()
 			end
 			
 			-- Scroll indicator
-			if #leaderboard > maxVisible then
-		gfx.setColor(gfx.kColorBlack)
-				local scrollText = string.format("%d/%d", leaderboardScrollOffset + 1, #leaderboard)
+			if #entries > maxVisible then
+				gfx.setColor(gfx.kColorBlack)
+				local scrollText = string.format("%d/%d", leaderboardScrollOffset + 1, #entries)
 				local scrollWidth = font:getTextWidth(scrollText)
 				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
 			end
 		end
-		
-		-- Instructions
+
+		-- Instructions (plus upload progress on the online tab)
 		gfx.setColor(gfx.kColorBlack)
-		local instText = "A/B: Back"
+		local instText = "A/B: Back   Left/Right: Switch"
+		if isOnline and OnlineLeaderboard.pendingCount() > 0 then
+			instText = "Uploading " .. OnlineLeaderboard.pendingCount() .. " score(s)...   A/B: Back"
+		end
 		local instWidth = font:getTextWidth(instText)
 		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
 		

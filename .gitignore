@@ -48,6 +48,3 @@ yarn.lock
 .env.local
 .env.*.local
 
-
-# Local Supabase settings (copy from supabase/config.example.lua)
-source/config.lua

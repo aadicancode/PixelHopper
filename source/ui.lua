@@ -407,8 +407,8 @@ local function drawDeathScreen(s)
 		end
 	end
 
-	horizontalMenu({ "RETRY", "SCORES", "AWARDS" }, s.menuSelection, W / 2, 148)
-	dizzyBunny(s.images, 330)
+	horizontalMenu({ "RETRY", "SCORES", "AWARDS", "MENU" }, s.menuSelection, W / 2, 148)
+	dizzyBunny(s.images, 366)
 	hints({ { "LR", "MOVE" }, { "A", "SELECT" }, { "B", "RETRY" } }, W / 2 - 30, 214, true)
 end
 

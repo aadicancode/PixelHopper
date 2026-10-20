@@ -726,17 +726,26 @@ end
 syncHighScoreFromLeaderboard()
 
 -- === UI / Menu selection for death screen ===
-local menuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS" }
+local menuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS", "MAIN MENU" }
 local mainMenuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS", "CHANGE NAME" }
 
 -- === Leaderboard screen (local and online tabs) ===
 local leaderboardTab = "local" -- "local" | "online"
 
+local returnState = "mainmenu" -- where Back goes from the leaderboard / achievements screens
+
 local function openLeaderboard()
+	returnState = gameState
 	gameState = "leaderboard"
 	leaderboardTab = "local"
 	leaderboardScrollOffset = 0
 	OnlineLeaderboard.refresh() -- start loading so the online tab is ready when opened
+end
+
+local function openAchievements()
+	returnState = gameState
+	gameState = "achievements"
+	achievementsScrollOffset = 0
 end
 
 -- === Player name entry (system keyboard) ===
@@ -1651,8 +1660,7 @@ function playdate.update()
 			elseif menuSelection == 2 then
 				openLeaderboard()
 			elseif menuSelection == 3 then
-				-- View achievements
-				gameState = "achievements"
+				openAchievements()
 			elseif menuSelection == 4 then
 				openNameEntry()
 			end
@@ -1676,8 +1684,10 @@ function playdate.update()
 			elseif menuSelection == 2 then
 				openLeaderboard()
 			elseif menuSelection == 3 then
-				-- View achievements
-				gameState = "achievements"
+				openAchievements()
+			elseif menuSelection == 4 then
+				gameState = "mainmenu"
+				menuSelection = 1
 			end
 		elseif playdate.buttonJustPressed(playdate.kButtonB) then
 			restartGame()
@@ -1685,11 +1695,7 @@ function playdate.update()
 	elseif gameState == "leaderboard" then
 		-- A or B to go back
 		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
-			if lastScore > 0 or lastTime > 0 then
-				gameState = "dead"
-			else
-				gameState = "mainmenu"
-			end
+			gameState = returnState
 		end
 		-- Left/Right to switch between the local and online lists
 		if playdate.buttonJustPressed(playdate.kButtonLeft) or playdate.buttonJustPressed(playdate.kButtonRight) then
@@ -1707,11 +1713,7 @@ function playdate.update()
 	elseif gameState == "achievements" then
 		-- A or B to go back
 		if playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonB) then
-			if lastScore > 0 or lastTime > 0 then
-				gameState = "dead"
-			else
-				gameState = "mainmenu"
-			end
+			gameState = returnState
 		end
 		-- Up/Down to scroll (if needed)
 		if playdate.buttonJustPressed(playdate.kButtonUp) then

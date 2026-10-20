@@ -1572,7 +1572,7 @@ local function die()
 	-- Add score to local leaderboard (always, so player can see their history)
 	addScoreToLocalLeaderboard(carrotCount, elapsedTime)
 
-	-- Queue the run for the online leaderboard (uploads once the death screen is up)
+	-- Queue the run for the online leaderboard (uploads automatically in the background)
 	OnlineLeaderboard.submitScore(playerName, carrotCount, elapsedTime)
 
 	-- Sync high score and high time with leaderboard (leaderboard is now sorted)
@@ -1614,10 +1614,8 @@ function playdate.update()
 	-- Update notifications
 	updateNotifications()
 
-	-- Online leaderboard network work happens only outside gameplay, so it can't cause hitches
-	if gameState ~= "playing" and gameState ~= "dying" then
-		OnlineLeaderboard.update()
-	end
+	-- Online leaderboard: queued runs upload automatically at any time; the list is only fetched outside gameplay
+	OnlineLeaderboard.update(gameState ~= "playing" and gameState ~= "dying")
 
 	-- handle input for menu/state
 	if playdate.keyboard.isVisible() then

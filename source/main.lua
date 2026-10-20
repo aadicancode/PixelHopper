@@ -870,6 +870,7 @@ local function createSaw(x, y)
 	local collisionSize = sawSize * 0.8 -- Slightly smaller than visual for better feel
 	sprite:setCollideRect(-collisionSize/2, -collisionSize/2, collisionSize, collisionSize)
 	sprite:moveTo(x, y)
+	sprite:setZIndex(-1) -- behind the ground, so the buried half is hidden
 	sprite:add()
 	
 	-- Set initial direction (random left or right on ground)
@@ -878,12 +879,13 @@ local function createSaw(x, y)
 	local saw = {
 		sprite = sprite,
 		size = img:getSize(), -- unrotated width, for the flashing outline
-		state = "ground", -- "ground", "wallUp", "top", "wallDown"
+		state = "ground", -- "ground", "wallUp", "wallDown"
 		x = x,
 		y = y,
 		direction = direction, -- horizontal direction: 1 = right, -1 = left
 		wallSide = nil, -- which wall was hit: "left" or "right"
 		rotation = 0, -- rotation angle in degrees
+		spin = direction, -- spin direction; flips when the saw turns around at the ceiling
 		isFlashing = false,
 		removed = false
 	}
@@ -1076,77 +1078,59 @@ end
 -- === Obstacle Update Functions ===
 -------------------------------------------------------
 
--- Update saw movement
+-- Update saw movement.
+-- The saw's center runs along the ground line and the screen edges, so it's always half buried in the
+-- ground or half off the side of the screen (and only a quarter shows in the corners). It climbs a wall
+-- until its top touches the ceiling, then reverses back down; it never travels along the ceiling.
 local function updateSaw(saw)
 	if saw.removed or not saw.sprite then return end
 	
 	updateFlashingEffect(saw, saw.sprite)
 	
 	-- Always rotate the saw
-	saw.rotation = (saw.rotation + SAW_ROTATION_SPEED) % 360
+	saw.rotation = (saw.rotation + SAW_ROTATION_SPEED * saw.spin) % 360
 	saw.sprite:setRotation(saw.rotation)
 	
 	-- Only move if not flashing
 	if not saw.isFlashing then
-		local sawRadius = 12 -- Half of saw size (24/2)
+		local sawRadius = saw.size / 2
 		
 		if saw.state == "ground" then
-			-- Move horizontally on ground
-			saw.y = GROUND_TOP - sawRadius -- Lock y position to ground
+			-- Roll along the ground line, half buried
+			saw.y = GROUND_TOP
 			saw.x += saw.direction * SAW_SPEED
-			saw.sprite:moveTo(saw.x, saw.y)
 			
-			-- Check if hit a wall, then go up
-			if saw.x <= LEFT_BOUND + sawRadius then
-				saw.x = LEFT_BOUND + sawRadius
+			-- At a corner, climb the wall (half off the side of the screen)
+			if saw.x <= 0 then
+				saw.x = 0
 				saw.wallSide = "left"
 				saw.state = "wallUp"
-			elseif saw.x >= RIGHT_BOUND - sawRadius then
-				saw.x = RIGHT_BOUND - sawRadius
+			elseif saw.x >= SCREEN_W then
+				saw.x = SCREEN_W
 				saw.wallSide = "right"
 				saw.state = "wallUp"
 			end
 		elseif saw.state == "wallUp" then
-			-- Move vertically upward along the wall
 			saw.y -= SAW_SPEED
-			saw.sprite:moveTo(saw.x, saw.y)
 			
-			-- Check if hit the top, then move horizontally
-			if saw.y <= 20 + sawRadius then
-				saw.y = 20 + sawRadius
-				saw.state = "top"
-				-- Move in opposite direction from ground movement
-				saw.direction = -saw.direction
-			end
-		elseif saw.state == "top" then
-			-- Move horizontally along the top
-			saw.y = 20 + sawRadius -- Lock y position to top
-			saw.x += saw.direction * SAW_SPEED
-			saw.sprite:moveTo(saw.x, saw.y)
-			
-			-- Check if hit a wall, then go down
-			if saw.x <= LEFT_BOUND + sawRadius then
-				saw.x = LEFT_BOUND + sawRadius
-				saw.wallSide = "left"
+			-- Top of the saw reached the ceiling: turn around
+			if saw.y <= sawRadius then
+				saw.y = sawRadius
 				saw.state = "wallDown"
-			elseif saw.x >= RIGHT_BOUND - sawRadius then
-				saw.x = RIGHT_BOUND - sawRadius
-				saw.wallSide = "right"
-				saw.state = "wallDown"
+				saw.spin = -saw.spin
 			end
 		elseif saw.state == "wallDown" then
-			-- Move vertically downward along the wall
 			saw.y += SAW_SPEED
-			saw.sprite:moveTo(saw.x, saw.y)
 			
-			-- Check if hit the ground, then move horizontally
-			if saw.y >= GROUND_TOP - sawRadius then
-				saw.y = GROUND_TOP - sawRadius
+			-- Back at the corner: roll out across the ground, away from this wall
+			if saw.y >= GROUND_TOP then
+				saw.y = GROUND_TOP
 				saw.state = "ground"
-				-- Move in opposite direction from top movement
-				saw.direction = -saw.direction
+				saw.direction = (saw.wallSide == "left") and 1 or -1
 			end
 		end
+		
+		saw.sprite:moveTo(saw.x, saw.y)
 	end
 end
 
@@ -1279,9 +1263,9 @@ local function spawnSaw()
 	if #saws >= 3 then return end -- Max 3 saws
 	
 	-- Always spawn on ground at random position
-	local sawRadius = 12 -- Half of saw size (24/2)
-	local x = math.random(LEFT_BOUND + sawRadius, RIGHT_BOUND - sawRadius)
-	local y = GROUND_TOP - sawRadius
+	-- Always spawn half buried in the ground at a random position
+	local x = math.random(LEFT_BOUND + 16, RIGHT_BOUND - 16)
+	local y = GROUND_TOP
 	
 	local saw = createSaw(x, y)
 	if saw then

@@ -63,6 +63,9 @@ local MAX_FALL_SPEED = 9 -- terminal fall speed (px per frame)
 local JUMP_VELOCITY = -5.5
 local JUMP_BOOST_FRAMES = 14 -- frames that holding jump adds lift (max jump ~59px)
 local COYOTE_FRAMES = 4 -- frames you can still jump after walking off a ledge (~0.13s)
+-- Ledge assist: if a jump gets at least 75% of the bunny's 24px body above a platform's top
+-- (feet up to 6px below it), the bunny is warped up to stand on the platform once it starts falling
+local LEDGE_ASSIST_PX = 6
 local MOVE_SPEED = 3
 local MOVE_ACCELERATION = 0.5 -- horizontal acceleration (increased for more responsive feel)
 local MOVE_DECELERATION = 0.55 -- ground friction / viscosity (increased for less slipperiness)
@@ -1804,7 +1807,7 @@ function playdate.update()
 						local hitH = hitRect.height or 22
 						local bunnyBottom = by - (hitH / 2) + 10
 						local distanceAbove = pTop - bunnyBottom
-						if distanceAbove >= -2 and distanceAbove <= 2 and yVelocity >= 0 then
+						if distanceAbove >= -LEDGE_ASSIST_PX and distanceAbove <= 2 and yVelocity >= 0 then
 							yVelocity = 0
 							isOnGround = true
 							local offset = (hitH / 2) - 10
@@ -1845,7 +1848,7 @@ function playdate.update()
 				local pLeft, pRight, pTop = px - pw/2, px + pw/2, py - ph/2
 				if bx > pLeft and bx < pRight then
 					local distanceAbove = pTop - bunnyBottomHalf
-					if distanceAbove >= -2 and distanceAbove <= 6 and yVelocity >= 0 then
+					if distanceAbove >= -LEDGE_ASSIST_PX and distanceAbove <= 6 and yVelocity >= 0 then
 						newGroundTop = pTop
 						isOnGround = true
 						yVelocity = 0

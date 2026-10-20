@@ -4,6 +4,7 @@ import "CoreLibs/timer"
 import "CoreLibs/keyboard"
 import "config"
 import "online"
+import "ui"
 
 local gfx = playdate.graphics
 
@@ -371,7 +372,7 @@ bunny:moveTo(SCREEN_W / 2, GROUND_TOP)
 bunny:add()
 
 local bw, bh = imgRight:getSize()
-bunny:setCollideRect(6, bh - 22, 20, 22)
+bunny:setCollideRect(math.max(0, (bw - 20) / 2), bh - 22, 20, 22) -- centered on the image
 
 -- === State ===
 local yVelocity = 0
@@ -432,6 +433,7 @@ local highScore = 0
 local highTime = 0.0  -- Time from the same run as high score
 local lastScore = 0
 local lastTime = 0.0
+local lastRunWasBest = false -- set on death, shown as NEW BEST! on the death screen
 
 local function loadHighScore()
 	local data = playdate.datastore.read("highScore")
@@ -1451,6 +1453,15 @@ local DEATH_FALL_MAX_MS = 2000
 local DEATH_POP_VELOCITY = -6
 local imgDeadRight = imgRight:scaledImage(1, -1)
 local imgDeadLeft = imgLeft:scaledImage(1, -1)
+
+-- Sprites the menus and HUD draw (ui.lua)
+local uiImages = {
+	bunny = imgRight,
+	bunnyHop = imgHopRight,
+	bunnyFall = imgHopDownRight,
+	bunnyDead = imgDeadRight,
+	carrot = carrotImg,
+}
 local deathStartMs = 0
 local deathVelocity = 0
 
@@ -1569,6 +1580,9 @@ local function die()
 	-- Check "Carrot Master" achievement (30 carrots in a single game)
 	checkAchievement("carrot_master")
 
+	-- Remember whether this run beat the previous best, before the best is updated
+	lastRunWasBest = carrotCount > highScore
+
 	-- Add score to local leaderboard (always, so player can see their history)
 	addScoreToLocalLeaderboard(carrotCount, elapsedTime)
 
@@ -1651,10 +1665,10 @@ function playdate.update()
 			restartGame()
 		end
 	elseif gameState == "dead" then
-		-- Up/Down to navigate menu, A to select, B to restart
-		if playdate.buttonJustPressed(playdate.kButtonUp) then
+		-- Left/Right (or Up/Down) to navigate the row of buttons, A to select, B to restart
+		if playdate.buttonJustPressed(playdate.kButtonLeft) or playdate.buttonJustPressed(playdate.kButtonUp) then
 			menuSelection = math.max(1, menuSelection - 1)
-		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
+		elseif playdate.buttonJustPressed(playdate.kButtonRight) or playdate.buttonJustPressed(playdate.kButtonDown) then
 			menuSelection = math.min(#menuOptions, menuSelection + 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonA) then
 			if menuSelection == 1 then
@@ -1703,7 +1717,7 @@ function playdate.update()
 		if playdate.buttonJustPressed(playdate.kButtonUp) then
 			achievementsScrollOffset = math.max(0, achievementsScrollOffset - 1)
 		elseif playdate.buttonJustPressed(playdate.kButtonDown) then
-			achievementsScrollOffset = math.min(math.max(0, #achievementDefinitions - 7), achievementsScrollOffset + 1)
+			achievementsScrollOffset = math.min(math.max(0, #achievementDefinitions - 3), achievementsScrollOffset + 1)
 		end
 	elseif gameState == "dying" then
 		updateDying()
@@ -2285,442 +2299,28 @@ function playdate.update()
 		end
 	end
 
-	-- draw timer and carrot count (during gameplay and the death sequence)
-	if inGame then
-		gfx.setColor(gfx.kColorBlack)
-		-- Timer at top-left
-		gfx.drawText(formatTime(elapsedTime), 8, 8)
-		-- Carrot count at top-right
-		gfx.drawText("Carrots: " .. carrotCount, SCREEN_W - 100, 8)
-	end
-	
-	-- draw death/menu overlays
-	local font = gfx.getFont()
-	
-	if gameState == "mainmenu" then
-		-- Draw background (same as death screen)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-		
-		-- Simple text display (same as death screen)
-		gfx.setColor(gfx.kColorBlack)
-		local yPos = 10
-		local statsLineHeight = 22  -- Reduced spacing for stats
-		
-		-- Player Name (ensure we have the latest value)
-		local displayPlayerName = playerName or "Player"
-		if not displayPlayerName or displayPlayerName == "" then
-			displayPlayerName = "Player"
-		end
-		local playerNameText = "PLAYER: " .. displayPlayerName
-		local playerNameWidth = font:getTextWidth(playerNameText)
-		gfx.drawText(playerNameText, SCREEN_W / 2 - playerNameWidth / 2, yPos)
-		
-		-- High Score
-		yPos = yPos + statsLineHeight + 5
-		local highScoreText = "HIGH SCORE: " .. tostring(highScore)
-		local highScoreWidth = font:getTextWidth(highScoreText)
-		gfx.drawText(highScoreText, SCREEN_W / 2 - highScoreWidth / 2, yPos)
-		
-		-- High Timer
-		yPos = yPos + statsLineHeight
-		local highTimerText = "HIGH TIMER: " .. formatTime(highTime)
-		local highTimerWidth = font:getTextWidth(highTimerText)
-		gfx.drawText(highTimerText, SCREEN_W / 2 - highTimerWidth / 2, yPos)
-		
-		-- Current Score
-		yPos = yPos + statsLineHeight
-		local currentScoreText = "CURRENT SCORE: " .. tostring(lastScore)
-		local currentScoreWidth = font:getTextWidth(currentScoreText)
-		gfx.drawText(currentScoreText, SCREEN_W / 2 - currentScoreWidth / 2, yPos)
-		
-		-- Current Timer
-		yPos = yPos + statsLineHeight
-		local currentTimerText = "CURRENT TIMER: " .. formatTime(lastTime)
-		local currentTimerWidth = font:getTextWidth(currentTimerText)
-		gfx.drawText(currentTimerText, SCREEN_W / 2 - currentTimerWidth / 2, yPos)
-		
-		-- Menu options (with more spacing)
-		yPos = yPos + statsLineHeight + 5
-		local menuY = yPos
-		local menuLineHeight = 22  -- Spacing between menu items
-		
-		-- RESTART option
-		local restartText = "RESTART"
-		local restartWidth = font:getTextWidth(restartText)
-		if menuSelection == 1 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(restartText, SCREEN_W / 2 - restartWidth / 2, menuY)
-		
-		-- LEADERBOARD option
-		menuY = menuY + menuLineHeight
-		local leaderboardText = "LEADERBOARD"
-		local leaderboardWidth = font:getTextWidth(leaderboardText)
-		if menuSelection == 2 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(leaderboardText, SCREEN_W / 2 - leaderboardWidth / 2, menuY)
-		
-		-- ACHIEVEMENTS option
-		menuY = menuY + menuLineHeight
-		local achievementsText = "ACHIEVEMENTS"
-		local achievementsWidth = font:getTextWidth(achievementsText)
-		if menuSelection == 3 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - achievementsWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(achievementsText, SCREEN_W / 2 - achievementsWidth / 2, menuY)
-
-		-- CHANGE NAME option
-		menuY = menuY + menuLineHeight
-		local changeNameText = "CHANGE NAME"
-		local changeNameWidth = font:getTextWidth(changeNameText)
-		if menuSelection == 4 then
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - changeNameWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(changeNameText, SCREEN_W / 2 - changeNameWidth / 2, menuY)
-
-		-- Instructions (moved to very bottom with more space)
-		local instText = "A: Select  B: Start"
-		local instWidth = font:getTextWidth(instText)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
-		
-	elseif gameState == "dead" then
-		-- Draw background (same as main menu)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-		
-		-- Simple text display (same as main menu)
-		gfx.setColor(gfx.kColorBlack)
-		local yPos = 30
-		local statsLineHeight = 22  -- Reduced spacing for stats
-		
-		-- High Score
-		local highScoreText = "HIGH SCORE: " .. tostring(highScore)
-		local highScoreWidth = font:getTextWidth(highScoreText)
-		gfx.drawText(highScoreText, SCREEN_W / 2 - highScoreWidth / 2, yPos)
-		
-		-- High Timer
-		yPos = yPos + statsLineHeight
-		local highTimerText = "HIGH TIMER: " .. formatTime(highTime)
-		local highTimerWidth = font:getTextWidth(highTimerText)
-		gfx.drawText(highTimerText, SCREEN_W / 2 - highTimerWidth / 2, yPos)
-		
-		-- Current Score
-		yPos = yPos + statsLineHeight
-		local currentScoreText = "CURRENT SCORE: " .. tostring(lastScore)
-		local currentScoreWidth = font:getTextWidth(currentScoreText)
-		gfx.drawText(currentScoreText, SCREEN_W / 2 - currentScoreWidth / 2, yPos)
-		
-		-- Current Timer
-		yPos = yPos + statsLineHeight
-		local currentTimerText = "CURRENT TIMER: " .. formatTime(lastTime)
-		local currentTimerWidth = font:getTextWidth(currentTimerText)
-		gfx.drawText(currentTimerText, SCREEN_W / 2 - currentTimerWidth / 2, yPos)
-		
-		-- Menu options (with more spacing)
-		yPos = yPos + statsLineHeight + 5
-		local menuY = yPos
-		local menuLineHeight = 22  -- Spacing between menu items
-		
-		-- RESTART option
-		local restartText = "RESTART"
-		local restartWidth = font:getTextWidth(restartText)
-		if menuSelection == 1 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - restartWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(restartText, SCREEN_W / 2 - restartWidth / 2, menuY)
-		
-		-- LEADERBOARD option
-		menuY = menuY + menuLineHeight
-		local leaderboardText = "LEADERBOARD"
-		local leaderboardWidth = font:getTextWidth(leaderboardText)
-		if menuSelection == 2 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - leaderboardWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(leaderboardText, SCREEN_W / 2 - leaderboardWidth / 2, menuY)
-		
-		-- ACHIEVEMENTS option
-		menuY = menuY + menuLineHeight
-		local achievementsText = "ACHIEVEMENTS"
-		local achievementsWidth = font:getTextWidth(achievementsText)
-		if menuSelection == 3 then
-			-- Draw selection line on the left side
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(SCREEN_W / 2 - achievementsWidth / 2 - 8, menuY, 3, 16)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(achievementsText, SCREEN_W / 2 - achievementsWidth / 2, menuY)
-		
-		-- Instructions (moved to very bottom with more space)
-		local instText = "A: Select  B: Restart"
-		local instWidth = font:getTextWidth(instText)
-		gfx.setColor(gfx.kColorBlack)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
-		
-	elseif gameState == "leaderboard" then
-		-- Leaderboard screen
-		gfx.setColor(gfx.kColorWhite)
-		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-		
-		-- Title
-		gfx.setColor(gfx.kColorBlack)
-		local isOnline = leaderboardTab == "online"
-		local titleText = isOnline and "< ONLINE LEADERBOARD >" or "< LOCAL LEADERBOARD >"
-		local titleWidth = font:getTextWidth(titleText)
-		gfx.drawText(titleText, SCREEN_W / 2 - titleWidth / 2, 10)
-
-		-- Draw leaderboard entries
-		local entries = isOnline and OnlineLeaderboard.entries or leaderboard
-		local startY = 40
-		local lineHeight = 22
-		local maxVisible = 7
-
-		-- What to say when there's nothing to list
-		local noDataText = nil
-		if isOnline then
-			if not OnlineLeaderboard.isConfigured() then
-				noDataText = "Online leaderboard isn't set up"
-			elseif OnlineLeaderboard.status == "error" and #entries == 0 then
-				noDataText = "Couldn't connect: " .. (OnlineLeaderboard.message or "unknown error")
-			elseif OnlineLeaderboard.status ~= "ready" and #entries == 0 then
-				noDataText = "Loading..."
-			elseif #entries == 0 then
-				noDataText = "No online scores yet"
-			end
-		elseif #entries == 0 then
-			noDataText = "No scores yet"
-		end
-
-		if noDataText then
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawTextInRect(noDataText, 20, startY + 50, SCREEN_W - 40, 60, nil, nil, kTextAlignment.center)
-		else
-			-- Draw header with better spacing
-			gfx.setColor(gfx.kColorBlack)
-			local rankX = 20
-			local nameX = 60
-			local scoreX = 150
-			local timeX = 230
-			
-			gfx.drawText("RANK", rankX, startY)
-			gfx.drawText("NAME", nameX, startY)
-			gfx.drawText("SCORE", scoreX, startY)
-			gfx.drawText("TIME", timeX, startY)
-			
-			-- Draw entries
-			local visibleStart = leaderboardScrollOffset + 1
-			local visibleEnd = math.min(visibleStart + maxVisible - 1, #entries)
-
-			for i = visibleStart, visibleEnd do
-				local entry = entries[i]
-				if entry then
-					local y = startY + (i - visibleStart + 1) * lineHeight
-					
-					-- Rank
-					local rankText = tostring(entry.rank or i)
-					gfx.drawText(rankText, rankX, y)
-					
-					-- Player name (truncate if too long to fit column width)
-					local nameText = entry.playerName or "Player"
-					local maxNameWidth = scoreX - nameX - 10  -- Leave 10px gap before score
-					if font:getTextWidth(nameText) > maxNameWidth then
-						-- Truncate name to fit
-						for j = #nameText, 1, -1 do
-							local testText = string.sub(nameText, 1, j) .. "..."
-							if font:getTextWidth(testText) <= maxNameWidth then
-								nameText = testText
-								break
-							end
-						end
-					end
-					gfx.drawText(nameText, nameX, y)
-					
-					-- Score (ensure it's a number, not a string)
-					local score = entry.score or 0
-					if type(score) ~= "number" then
-						score = tonumber(score) or 0
-					end
-					local scoreText = tostring(score)
-					local maxScoreWidth = timeX - scoreX - 10  -- Leave 10px gap before time
-					if font:getTextWidth(scoreText) > maxScoreWidth then
-						-- Truncate score to fit
-						for j = #scoreText, 1, -1 do
-							local testText = string.sub(scoreText, 1, j)
-							if font:getTextWidth(testText) <= maxScoreWidth then
-								scoreText = testText
-								break
-							end
-						end
-					end
-					gfx.drawText(scoreText, scoreX, y)
-					
-					-- Time
-					local timeText = formatTime(entry.time or 0)
-					gfx.drawText(timeText, timeX, y)
-				end
-			end
-			
-			-- Scroll indicator
-			if #entries > maxVisible then
-				gfx.setColor(gfx.kColorBlack)
-				local scrollText = string.format("%d/%d", leaderboardScrollOffset + 1, #entries)
-				local scrollWidth = font:getTextWidth(scrollText)
-				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
-			end
-		end
-
-		-- Instructions (plus upload progress on the online tab)
-		gfx.setColor(gfx.kColorBlack)
-		local instText = "A/B: Back   Left/Right: Switch"
-		if isOnline and OnlineLeaderboard.pendingCount() > 0 then
-			instText = "Uploading " .. OnlineLeaderboard.pendingCount() .. " score(s)...   A/B: Back"
-		end
-		local instWidth = font:getTextWidth(instText)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
-		
-	elseif gameState == "achievements" then
-		-- Achievements screen
-		gfx.setColor(gfx.kColorWhite)
-		gfx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-		
-		-- Title
-		gfx.setColor(gfx.kColorBlack)
-		local titleText = "ACHIEVEMENTS"
-		local titleWidth = font:getTextWidth(titleText)
-		gfx.drawText(titleText, SCREEN_W / 2 - titleWidth / 2, 10)
-		
-		-- Draw achievements list
-		local startY = 40
-		local lineHeight = 42  -- Increased spacing even more to prevent overlap
-		local maxVisible = 5   -- Reduced visible items to fit better
-		
-		if #achievementDefinitions == 0 then
-			gfx.setColor(gfx.kColorBlack)
-			local noDataText = "No achievements"
-			local noDataWidth = font:getTextWidth(noDataText)
-			gfx.drawText(noDataText, SCREEN_W / 2 - noDataWidth / 2, startY + 50)
-		else
-			-- Draw entries
-			local visibleStart = achievementsScrollOffset + 1
-			local visibleEnd = math.min(visibleStart + maxVisible - 1, #achievementDefinitions)
-			
-			for i = visibleStart, visibleEnd do
-				local def = achievementDefinitions[i]
-				local achievement = achievements[def.id]
-				if achievement then
-					local y = startY + (i - visibleStart) * lineHeight
-					
-					-- Achievement status indicator (locked/unlocked)
-					local statusX = 20
-					if achievement.unlocked then
-						-- Draw checkmark or unlocked indicator
-						gfx.setColor(gfx.kColorBlack)
-						gfx.fillRect(statusX, y + 4, 12, 12)
-						-- White checkmark drawn with lines (drawText ignores setColor, and the font may lack ✓)
-						gfx.setColor(gfx.kColorWhite)
-						gfx.setLineWidth(2)
-						gfx.drawLine(statusX + 2, y + 10, statusX + 5, y + 13)
-						gfx.drawLine(statusX + 5, y + 13, statusX + 10, y + 6)
-					else
-						-- Draw locked indicator
-						gfx.setColor(gfx.kColorBlack)
-						gfx.drawRect(statusX, y + 4, 12, 12)
-						gfx.setColor(gfx.kColorBlack)
-						gfx.drawText("?", statusX + 4, y + 2)
-					end
-					
-					-- Achievement name (always show, with proper spacing)
-					gfx.setColor(gfx.kColorBlack)
-					local nameText = achievement.name
-					if not achievement.unlocked then
-						nameText = "???"
-					end
-					-- Draw name on first line
-					gfx.drawText(nameText, statusX + 18, y + 2)
-					
-					-- Achievement description (only if unlocked, with proper spacing)
-					if achievement.unlocked then
-						gfx.setColor(gfx.kColorBlack)
-						local descText = achievement.description
-						-- Truncate if too long
-						local maxWidth = SCREEN_W - statusX - 18 - 20
-						if font:getTextWidth(descText) > maxWidth then
-							-- Find the longest substring that fits
-							for i = #descText, 1, -1 do
-								local testText = string.sub(descText, 1, i) .. "..."
-								if font:getTextWidth(testText) <= maxWidth then
-									descText = testText
-									break
-								end
-							end
-						end
-						-- Draw description on second line with more spacing (20 pixels down from name)
-						gfx.drawText(descText, statusX + 18, y + 20)
-					else
-						-- For locked achievements, show hint text
-						gfx.setColor(gfx.kColorBlack)
-						local hintText = "Locked"
-						gfx.drawText(hintText, statusX + 18, y + 20)
-					end
-				end
-			end
-			
-			-- Scroll indicator
-			if #achievementDefinitions > maxVisible then
-				gfx.setColor(gfx.kColorBlack)
-				local scrollText = string.format("%d/%d", achievementsScrollOffset + 1, #achievementDefinitions)
-				local scrollWidth = font:getTextWidth(scrollText)
-				gfx.drawText(scrollText, SCREEN_W / 2 - scrollWidth / 2, SCREEN_H - 40)
-			end
-		end
-		
-		-- Instructions
-		gfx.setColor(gfx.kColorBlack)
-		local instText = "A/B: Back"
-		local instWidth = font:getTextWidth(instText)
-		gfx.drawText(instText, SCREEN_W / 2 - instWidth / 2, SCREEN_H - 20)
-	end
-
-	-- Achievement notification (drawn last so it shows on every screen)
-	if activeNotification then
-		local notif = activeNotification.achievement
-		local notifY = 30
-		local padding = 8
-		local textWidth = font:getTextWidth(notif.name)
-		local descWidth = font:getTextWidth(notif.description)
-		local boxWidth = math.max(textWidth, descWidth) + padding * 2
-		local boxHeight = 40
-		local boxX = (SCREEN_W - boxWidth) / 2
-
-		-- Draw notification background
-		gfx.setColor(gfx.kColorBlack)
-		gfx.fillRect(boxX, notifY, boxWidth, boxHeight)
-		gfx.setColor(gfx.kColorWhite)
-		gfx.setLineWidth(2)
-		gfx.drawRect(boxX, notifY, boxWidth, boxHeight)
-
-		-- Draw achievement text in white (drawText uses the image draw mode, not setColor)
-		gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
-		gfx.drawText(notif.name, boxX + padding, notifY + 6)
-		gfx.drawText(notif.description, boxX + padding, notifY + 22)
-		gfx.setImageDrawMode(gfx.kDrawModeCopy)
-	end
+	-- HUD, menus, leaderboard, achievements and toasts (see ui.lua)
+	UI.draw({
+		gameState = gameState,
+		menuSelection = menuSelection,
+		mainMenuOptions = mainMenuOptions,
+		playerName = (playerName and playerName ~= "") and playerName or "Player",
+		highScore = highScore,
+		highTime = highTime,
+		lastScore = lastScore,
+		lastTime = lastTime,
+		newBest = lastRunWasBest,
+		elapsedTime = elapsedTime,
+		carrotCount = carrotCount,
+		leaderboard = leaderboard,
+		leaderboardTab = leaderboardTab,
+		scrollOffset = (gameState == "achievements") and achievementsScrollOffset or leaderboardScrollOffset,
+		online = OnlineLeaderboard,
+		achievementDefinitions = achievementDefinitions,
+		achievements = achievements,
+		notification = activeNotification,
+		notificationAge = activeNotification and (nowMs() - activeNotification.startTime) or 0,
+		formatTime = formatTime,
+		images = uiImages,
+	})
 end

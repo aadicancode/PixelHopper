@@ -216,8 +216,8 @@ local clouds = {
 	{ x = 180, y = 170, s = 0.7, speed = 0.007 },
 }
 
-local function cloud(x, y, s)
-	dither(0.2)
+local function cloud(x, y, s, alpha)
+	dither(alpha or 0.2)
 	gfx.fillCircleAtPoint(x, y, 9 * s)
 	gfx.fillCircleAtPoint(x + 12 * s, y - 5 * s, 12 * s)
 	gfx.fillCircleAtPoint(x + 26 * s, y, 9 * s)
@@ -706,6 +706,111 @@ local function drawToast(s)
 	trophy(x + 14, y + 12, true)
 	text(fonts.label, "ACHIEVEMENT UNLOCKED", x + 44, y + 7, true)
 	text(fonts.bold, name, x + 44, y + 19, true)
+end
+
+-------------------------------------------------------
+-- Gameplay backdrop: sun, drifting clouds, birds, rolling hills, flowers and grass.
+-- Kept to light greys so hazards (bold black) stay easy to read.
+-------------------------------------------------------
+local FIELD_GROUND_Y <const> = 216 -- matches GROUND_TOP in main.lua
+
+local fieldClouds = {
+	{ x = 20, y = 46, s = 1.2, speed = 0.0060 },
+	{ x = 150, y = 100, s = 0.8, speed = 0.0035 },
+	{ x = 260, y = 30, s = 1.0, speed = 0.0075 },
+	{ x = 330, y = 140, s = 0.7, speed = 0.0028 },
+	{ x = 90, y = 160, s = 0.6, speed = 0.0045 },
+}
+
+local fieldBirds = {
+	{ y = 58, speed = 0.022, offset = 0, size = 4 },
+	{ y = 66, speed = 0.022, offset = 18, size = 3 },
+}
+
+-- Static layers are drawn once into images
+local skyImage = nil -- sun
+local landImage = nil -- hills, flowers, grass tufts
+
+local function buildFieldImages()
+	skyImage = gfx.image.new(W, H, gfx.kColorClear)
+	gfx.pushContext(skyImage)
+		-- Sun with short rays
+		local sx, sy = 330, 52
+		dither(0.35)
+		gfx.fillCircleAtPoint(sx, sy, 13)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.setLineWidth(1)
+		gfx.drawCircleAtPoint(sx, sy, 13)
+		for i = 0, 7 do
+			local a = i / 8 * math.pi * 2
+			gfx.drawLine(sx + math.cos(a) * 17, sy + math.sin(a) * 17, sx + math.cos(a) * 22, sy + math.sin(a) * 22)
+		end
+	gfx.popContext()
+
+	landImage = gfx.image.new(W, H, gfx.kColorClear)
+	gfx.pushContext(landImage)
+		-- Far hills (lighter), then near hills (a little darker)
+		local layers = {
+			{ base = 178, a1 = 10, f1 = 70, a2 = 5, f2 = 31, phase = 0.0, alpha = 0.08 },
+			{ base = 196, a1 = 8, f1 = 45, a2 = 4, f2 = 19, phase = 2.0, alpha = 0.17 },
+		}
+		for _, l in ipairs(layers) do
+			dither(l.alpha)
+			for x = 0, W - 1, 2 do
+				local top = l.base - math.sin(x / l.f1 + l.phase) * l.a1 - math.sin(x / l.f2 + l.phase * 2) * l.a2
+				gfx.fillRect(x, math.floor(top), 2, FIELD_GROUND_Y - math.floor(top))
+			end
+		end
+
+		-- Grass tufts along the ground
+		gfx.setColor(gfx.kColorBlack)
+		for x = 3, W, 17 do
+			gfx.fillTriangle(x, FIELD_GROUND_Y, x + 2, FIELD_GROUND_Y - 4, x + 4, FIELD_GROUND_Y)
+			gfx.fillTriangle(x + 4, FIELD_GROUND_Y, x + 6, FIELD_GROUND_Y - 3, x + 8, FIELD_GROUND_Y)
+		end
+
+		-- A few little flowers
+		for _, fx in ipairs({ 36, 118, 171, 247, 302, 371 }) do
+			local stem = (fx % 3 == 0) and 7 or 5
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawLine(fx, FIELD_GROUND_Y - 1, fx, FIELD_GROUND_Y - stem)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
+			gfx.drawPixel(fx, FIELD_GROUND_Y - stem - 2)
+		end
+	gfx.popContext()
+	gfx.setColor(gfx.kColorBlack)
+end
+
+local function bird(x, y, size, flapUp)
+	gfx.setColor(gfx.kColorBlack)
+	local wingY = flapUp and (y - size) or (y + 1)
+	gfx.drawLine(x - size, wingY, x, y)
+	gfx.drawLine(x, y, x + size, wingY)
+end
+
+-- Draw behind the sprites, right after the screen is cleared
+function UI.drawPlayfield()
+	if not skyImage then buildFieldImages() end
+	local t = now()
+
+	skyImage:draw(0, 0)
+
+	for _, c in ipairs(fieldClouds) do
+		local x = (c.x + t * c.speed) % (W + 90) - 50
+		cloud(x, c.y, c.s, 0.15)
+	end
+
+	for _, b in ipairs(fieldBirds) do
+		local x = (t * b.speed + b.offset) % (W + 160) - 40
+		local flap = ((t // 220) + b.offset) % 2 == 0
+		bird(x, b.y + math.sin(t / 400 + b.offset) * 2, b.size, flap)
+	end
+
+	landImage:draw(0, 0)
+	gfx.setColor(gfx.kColorBlack)
 end
 
 -------------------------------------------------------

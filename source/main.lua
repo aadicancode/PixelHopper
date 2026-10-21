@@ -332,6 +332,17 @@ local groundImage = gfx.image.new(GROUND_WIDTH, GROUND_HEIGHT)
 gfx.pushContext(groundImage)
 	gfx.setColor(gfx.kColorBlack)
 	gfx.fillRect(0, 0, GROUND_WIDTH, GROUND_HEIGHT)
+	-- Pebbles in the dirt (fixed pattern so it doesn't change between runs)
+	gfx.setColor(gfx.kColorWhite)
+	for i = 0, 38 do
+		local px = (i * 53 + (i % 4) * 17) % GROUND_WIDTH
+		local py = 6 + (i * 7) % (GROUND_HEIGHT - 9)
+		if i % 3 == 0 then
+			gfx.fillRect(px, py, 3, 2)
+		else
+			gfx.fillRect(px, py, 2, 1)
+		end
+	end
 gfx.popContext()
 local ground = gfx.sprite.new(groundImage)
 ground:setCollideRect(0, 0, GROUND_WIDTH, GROUND_HEIGHT)
@@ -355,6 +366,12 @@ for _, p in ipairs(platformData) do
 	gfx.pushContext(img)
 		gfx.setColor(gfx.kColorBlack)
 		gfx.fillRect(0, 0, p.w, p.h)
+		-- Brick texture: a highlight along the top and staggered mortar lines
+		gfx.setColor(gfx.kColorWhite)
+		gfx.drawLine(2, 2, p.w - 3, 2)
+		gfx.drawLine(1, 6, p.w - 2, 6)
+		for bx = 6, p.w - 4, 12 do gfx.drawLine(bx, 3, bx, 5) end
+		for bx = 12, p.w - 4, 12 do gfx.drawLine(bx, 7, bx, p.h - 2) end
 	gfx.popContext()
 	local plat = gfx.sprite.new(img)
 	plat:setCollideRect(0, 0, p.w, p.h)
@@ -389,6 +406,13 @@ local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
 local gameState = "mainmenu" -- "mainmenu" | "playing" | "dying" | "dead" | "leaderboard" | "achievements"
+
+-- Scenery (sun, clouds, birds, hills, flowers) drawn as the sprite system's background, behind every sprite
+gfx.sprite.setBackgroundDrawingCallback(function()
+	if gameState == "playing" or gameState == "dying" then
+		UI.drawPlayfield()
+	end
+end)
 local startTimeMs = nowMs()
 local elapsedTime = 0.0
 
@@ -1615,6 +1639,11 @@ end
 -- === Main Loop ===
 function playdate.update()
 	gfx.clear(gfx.kColorWhite)
+
+	-- Scenery is animated, so have the sprite system redraw the whole background every frame
+	if gameState == "playing" or gameState == "dying" then
+		gfx.sprite.redrawBackground()
+	end
 
 	-- update timer (elapsed time) regardless of paused/dead for display
 	if gameState == "playing" then

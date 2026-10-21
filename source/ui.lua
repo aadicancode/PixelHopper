@@ -469,7 +469,8 @@ local function drawLeaderboard(s)
 	dither(0.5)
 	gfx.fillRect(0, BAND_H, W, 3)
 	text(fonts.title, "SCORES", 12, 2, true)
-	local tabs = { { "LOCAL", not isOnline }, { "ONLINE", isOnline } }
+	-- The outlined pill marks the other tab (the one Left/Right switches to)
+	local tabs = { { "LOCAL", isOnline }, { "ONLINE", not isOnline } }
 	local tx = 196
 	local nudge = math.floor(math.sin(now() / 160) * 2 + 0.5)
 	gfx.setColor(gfx.kColorWhite)

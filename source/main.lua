@@ -406,15 +406,15 @@ local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
 local gameState = "mainmenu" -- "mainmenu" | "playing" | "dying" | "dead" | "leaderboard" | "achievements"
-
--- Scenery (sun, clouds, birds, hills, flowers) drawn as the sprite system's background, behind every sprite
-gfx.sprite.setBackgroundDrawingCallback(function()
-	if gameState == "playing" or gameState == "dying" then
-		UI.drawPlayfield()
-	end
-end)
 local startTimeMs = nowMs()
 local elapsedTime = 0.0
+
+-- Scenery (sun/moon, clouds, birds, hills, flowers) drawn as the sprite system's background, behind every sprite
+gfx.sprite.setBackgroundDrawingCallback(function()
+	if gameState == "playing" or gameState == "dying" then
+		UI.drawPlayfield(elapsedTime)
+	end
+end)
 
 -- === Enemy spawn control ===
 local lastArrowSpawn = nowMs()

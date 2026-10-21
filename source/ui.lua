@@ -755,24 +755,55 @@ local fieldBirds = {
 	{ y = 66, speed = 0.022, offset = 18, size = 3 },
 }
 
+-- Day/night cycle: the sun crosses the sky from east (right) to west (left) and sets behind the
+-- hills, then the moon makes the same trip with stars out, then the sun again. Driven by the run's
+-- elapsed time, so every run starts at sunrise and pausing doesn't move the sky.
+local SUN_SECONDS <const> = 30
+local MOON_SECONDS <const> = 30
+local HORIZON_Y <const> = 206 -- the sun/moon sit this low at rise and set (hidden behind the hills)
+local ARC_HEIGHT <const> = 166 -- how high they climb (peak at y = 40)
+
+local stars = {
+	{ 40, 30 }, { 92, 58 }, { 128, 22 }, { 176, 48 }, { 214, 18 }, { 250, 64 },
+	{ 290, 34 }, { 336, 72 }, { 362, 40 }, { 62, 96 }, { 156, 88 }, { 306, 102 },
+}
+
 -- Static layers are drawn once into images
-local skyImage = nil -- sun
+local sunImage = nil
+local moonImage = nil
 local landImage = nil -- hills, flowers, grass tufts
 
 local function buildFieldImages()
-	skyImage = gfx.image.new(W, H, gfx.kColorClear)
-	gfx.pushContext(skyImage)
-		-- Sun with short rays
-		local sx, sy = 330, 52
+	-- Sun with short rays
+	sunImage = gfx.image.new(50, 50, gfx.kColorClear)
+	gfx.pushContext(sunImage)
 		dither(0.35)
-		gfx.fillCircleAtPoint(sx, sy, 13)
+		gfx.fillCircleAtPoint(25, 25, 13)
 		gfx.setColor(gfx.kColorBlack)
 		gfx.setLineWidth(1)
-		gfx.drawCircleAtPoint(sx, sy, 13)
+		gfx.drawCircleAtPoint(25, 25, 13)
 		for i = 0, 7 do
 			local a = i / 8 * math.pi * 2
-			gfx.drawLine(sx + math.cos(a) * 17, sy + math.sin(a) * 17, sx + math.cos(a) * 22, sy + math.sin(a) * 22)
+			gfx.drawLine(25 + math.cos(a) * 17, 25 + math.sin(a) * 17, 25 + math.cos(a) * 22, 25 + math.sin(a) * 22)
 		end
+	gfx.popContext()
+
+	-- Crescent moon: white disc, shaded dark side, a couple of craters
+	moonImage = gfx.image.new(30, 30, gfx.kColorClear)
+	gfx.pushContext(moonImage)
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillCircleAtPoint(15, 15, 11)
+		gfx.setColor(gfx.kColorBlack)
+		for py = 3, 27 do
+			for px = 3, 27 do
+				local inMoon = (px - 15) ^ 2 + (py - 15) ^ 2 <= 11 ^ 2
+				local inShadow = (px - 22) ^ 2 + (py - 12) ^ 2 <= 10 ^ 2
+				if inMoon and inShadow and (px + py) % 2 == 0 then gfx.drawPixel(px, py) end
+			end
+		end
+		gfx.drawCircleAtPoint(15, 15, 11)
+		gfx.drawCircleAtPoint(10, 17, 2)
+		gfx.drawCircleAtPoint(13, 22, 1)
 	gfx.popContext()
 
 	landImage = gfx.image.new(W, H, gfx.kColorClear)
@@ -819,12 +850,46 @@ local function bird(x, y, size, flapUp)
 	gfx.drawLine(x, y, x + size, wingY)
 end
 
--- Draw behind the sprites, right after the screen is cleared
-function UI.drawPlayfield()
-	if not skyImage then buildFieldImages() end
+-- Position along the east-to-west arc for progress p (0 = rising in the east, 1 = setting in the west)
+local function arcPosition(p)
+	local x = (W + 26) - p * (W + 52)
+	local y = HORIZON_Y - math.sin(p * math.pi) * ARC_HEIGHT
+	return math.floor(x), math.floor(y)
+end
+
+local function drawStars(nightProgress, t)
+	-- Stars fade in after moonrise and out before sunrise, a few at a time
+	local strength = math.sin(nightProgress * math.pi)
+	gfx.setColor(gfx.kColorBlack)
+	for i, star in ipairs(stars) do
+		if strength > 0.1 + (i / #stars) * 0.5 then
+			local x, y = star[1], star[2]
+			if ((t // 450) + i) % 4 == 0 then
+				gfx.drawPixel(x, y) -- twinkle
+			else
+				gfx.drawLine(x - 2, y, x + 2, y)
+				gfx.drawLine(x, y - 2, x, y + 2)
+			end
+		end
+	end
+end
+
+-- Draw behind the sprites (the sprite system's background). gameSeconds is the run's elapsed time.
+function UI.drawPlayfield(gameSeconds)
+	if not sunImage then buildFieldImages() end
 	local t = now()
 
-	skyImage:draw(0, 0)
+	-- Sun by day, moon (and stars) by night
+	local cycle = (gameSeconds or 0) % (SUN_SECONDS + MOON_SECONDS)
+	if cycle < SUN_SECONDS then
+		local x, y = arcPosition(cycle / SUN_SECONDS)
+		sunImage:draw(x - 25, y - 25)
+	else
+		local p = (cycle - SUN_SECONDS) / MOON_SECONDS
+		drawStars(p, t)
+		local x, y = arcPosition(p)
+		moonImage:draw(x - 15, y - 15)
+	end
 
 	for _, c in ipairs(fieldClouds) do
 		local x = (c.x + t * c.speed) % (W + 90) - 50

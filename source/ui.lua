@@ -434,10 +434,6 @@ local function footerBand(items, status)
 	if status then textRight(fonts.label, status, W - 10, FOOTER_Y + 7, true) end
 end
 
-local function animatedDots()
-	return string.rep(".", (now() // 300) % 4)
-end
-
 -------------------------------------------------------
 -- Leaderboard
 -------------------------------------------------------
@@ -459,9 +455,25 @@ local function greyLabelImage(label)
 	return img
 end
 
+-- Tiny white spinner for the black header
+local function miniSpinner(cx, cy)
+	local step = (now() // 90) % 6
+	gfx.setColor(gfx.kColorWhite)
+	for i = 0, 5 do
+		local a = i / 6 * math.pi * 2
+		local px, py = cx + math.cos(a) * 4, cy + math.sin(a) * 4
+		if (i - step) % 6 < 2 then
+			gfx.fillCircleAtPoint(px, py, 1.5)
+		else
+			gfx.drawPixel(px, py)
+		end
+	end
+end
+
 local function drawLeaderboard(s)
 	local isOnline = s.leaderboardTab == "online"
 	local online = s.online
+	local onlineBusy = online.isConfigured() and (online.pendingCount() > 0 or online.status == "loading")
 
 	-- Header with tab pills
 	gfx.setColor(gfx.kColorBlack)
@@ -479,19 +491,24 @@ local function drawLeaderboard(s)
 		local label, active = tab[1], tab[2]
 		local w = textWidth(fonts.label, label) + 22
 		if active then
-			-- The tab you're on: white outlined pill with white text
+			-- Outlined pill with white text
 			gfx.setColor(gfx.kColorWhite)
 			gfx.setLineWidth(2)
 			gfx.drawRoundRect(tx, 5, w, 20, 10)
 			gfx.setLineWidth(1)
 			textCentered(fonts.label, label, tx + w / 2, 9, true)
 		else
-			-- The other tab: no pill, greyed-out text
+			-- No pill, greyed-out text
 			local img = greyLabelImage(label)
 			local imgW = img:getSize()
 			img:drawFaded(math.floor(tx + w / 2 - imgW / 2), 9, 0.5, gfx.image.kDitherTypeBayer2x2)
 		end
 		tx += w + 6
+		-- Online scores downloading or a run uploading: small spinner right beside the ONLINE tab
+		if label == "ONLINE" and onlineBusy then
+			miniSpinner(tx + 3, 15)
+			tx += 14
+		end
 	end
 	gfx.setColor(gfx.kColorWhite)
 	gfx.fillTriangle(tx + 5 + nudge, 15, tx + nudge, 10, tx + nudge, 20)
@@ -574,16 +591,7 @@ local function drawLeaderboard(s)
 		end
 	end
 
-	-- Footer: controls and upload / loading status
-	local status = nil
-	if isOnline and online.isConfigured() then
-		if online.pendingCount() > 0 then
-			status = "UPLOADING" .. animatedDots()
-		elseif online.status == "loading" and #entries > 0 then
-			status = "REFRESHING" .. animatedDots()
-		end
-	end
-	footerBand({ { "LR", "TAB" }, { "UD", "SCROLL" }, { "B", "BACK" } }, status)
+	footerBand({ { "LR", "TAB" }, { "UD", "SCROLL" }, { "B", "BACK" } })
 end
 
 -------------------------------------------------------

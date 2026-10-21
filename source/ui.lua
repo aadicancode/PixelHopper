@@ -478,10 +478,12 @@ local function drawLeaderboard(s)
 		local label, active = tab[1], tab[2]
 		local w = textWidth(fonts.label, label) + 22
 		if active then
-			-- The tab you're on: solid white pill
+			-- The tab you're on: white outlined pill with white text
 			gfx.setColor(gfx.kColorWhite)
-			gfx.fillRoundRect(tx, 5, w, 20, 10)
-			textCentered(fonts.label, label, tx + w / 2, 9)
+			gfx.setLineWidth(2)
+			gfx.drawRoundRect(tx, 5, w, 20, 10)
+			gfx.setLineWidth(1)
+			textCentered(fonts.label, label, tx + w / 2, 9, true)
 		else
 			-- The other tab: no pill, greyed-out text
 			local img = greyLabelImage(label)

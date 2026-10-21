@@ -444,6 +444,21 @@ end
 local ROW_H <const> = 22
 local ROWS_VISIBLE <const> = 7
 
+-- White label text as an image, so it can be drawn faded (grey) on the black header
+local greyLabelCache = {}
+local function greyLabelImage(label)
+	local img = greyLabelCache[label]
+	if not img then
+		img = gfx.image.new(textWidth(fonts.label, label), fonts.label:getHeight(), gfx.kColorClear)
+		gfx.pushContext(img)
+			gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
+			fonts.label:drawText(label, 0, 0)
+		gfx.popContext()
+		greyLabelCache[label] = img
+	end
+	return img
+end
+
 local function drawLeaderboard(s)
 	local isOnline = s.leaderboardTab == "online"
 	local online = s.online
@@ -458,18 +473,20 @@ local function drawLeaderboard(s)
 	local tx = 196
 	local nudge = math.floor(math.sin(now() / 160) * 2 + 0.5)
 	gfx.setColor(gfx.kColorWhite)
-	gfx.fillTriangle(tx - 6 - nudge, 15, tx - 1 - nudge, 10, tx - 1 - nudge, 20)
+	gfx.fillTriangle(tx - 11 - nudge, 15, tx - 6 - nudge, 10, tx - 6 - nudge, 20)
 	for _, tab in ipairs(tabs) do
 		local label, active = tab[1], tab[2]
 		local w = textWidth(fonts.label, label) + 22
 		if active then
+			-- The tab you're on: solid white pill
 			gfx.setColor(gfx.kColorWhite)
 			gfx.fillRoundRect(tx, 5, w, 20, 10)
 			textCentered(fonts.label, label, tx + w / 2, 9)
 		else
-			gfx.setColor(gfx.kColorWhite)
-			gfx.drawRoundRect(tx, 5, w, 20, 10)
-			textCentered(fonts.label, label, tx + w / 2, 9, true)
+			-- The other tab: no pill, greyed-out text
+			local img = greyLabelImage(label)
+			local imgW = img:getSize()
+			img:drawFaded(math.floor(tx + w / 2 - imgW / 2), 9, 0.5, gfx.image.kDitherTypeBayer2x2)
 		end
 		tx += w + 6
 	end

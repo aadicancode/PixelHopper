@@ -361,15 +361,6 @@ local platformData = {
 	{ x = 325, y = 70,  w = 30, h = 10 },
 }
 
--- Let the scenery hang vines under the platforms (x, y = top-left)
-do
-	local rects = {}
-	for _, p in ipairs(platformData) do
-		table.insert(rects, { x = p.x - p.w / 2, y = p.y, w = p.w, h = p.h })
-	end
-	UI.setPlatforms(rects)
-end
-
 for _, p in ipairs(platformData) do
 	local img = gfx.image.new(p.w, p.h)
 	gfx.pushContext(img)

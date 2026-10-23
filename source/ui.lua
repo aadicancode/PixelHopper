@@ -722,12 +722,23 @@ local function drawToast(s)
 end
 
 -------------------------------------------------------
--- Gameplay backdrop: day/night sky, puffy clouds, distant mountains, tree-covered hills,
--- a grassy ground edge with flowers and mushrooms, vines under platforms, and critters
--- (birds and butterflies by day, fireflies at night).
+-- Gameplay backdrop: sun, drifting clouds, birds, rolling hills, flowers and grass.
 -- Kept to light greys so hazards (bold black) stay easy to read.
 -------------------------------------------------------
 local FIELD_GROUND_Y <const> = 216 -- matches GROUND_TOP in main.lua
+
+local fieldClouds = {
+	{ x = 20, y = 46, s = 1.2, speed = 0.0060 },
+	{ x = 150, y = 100, s = 0.8, speed = 0.0035 },
+	{ x = 260, y = 30, s = 1.0, speed = 0.0075 },
+	{ x = 330, y = 140, s = 0.7, speed = 0.0028 },
+	{ x = 90, y = 160, s = 0.6, speed = 0.0045 },
+}
+
+local fieldBirds = {
+	{ y = 58, speed = 0.022, offset = 0, size = 4 },
+	{ y = 66, speed = 0.022, offset = 18, size = 3 },
+}
 
 -- Day/night cycle: the sun crosses the sky from east (right) to west (left) and sets behind the
 -- hills, then the moon makes the same trip with stars out, then the sun again. Driven by the run's
@@ -736,99 +747,16 @@ local SUN_SECONDS <const> = 30
 local MOON_SECONDS <const> = 30
 local HORIZON_Y <const> = 206 -- the sun/moon sit this low at rise and set (hidden behind the hills)
 local ARC_HEIGHT <const> = 166 -- how high they climb (peak at y = 40)
-local NIGHT_TINT <const> = 0.08 -- how much the sky dims at midnight (0 = not at all)
 
 local stars = {
 	{ 40, 30 }, { 92, 58 }, { 128, 22 }, { 176, 48 }, { 214, 18 }, { 250, 64 },
 	{ 290, 34 }, { 336, 72 }, { 362, 40 }, { 62, 96 }, { 156, 88 }, { 306, 102 },
 }
 
--- Clouds: which pre-drawn cloud to use (1 big, 2 medium, 3 small), where, and how fast they drift
-local fieldClouds = {
-	{ kind = 1, x = 20, y = 40, speed = 0.0060 },
-	{ kind = 3, x = 150, y = 96, speed = 0.0035 },
-	{ kind = 2, x = 255, y = 26, speed = 0.0075 },
-	{ kind = 3, x = 330, y = 76, speed = 0.0028 },
-	{ kind = 2, x = 90, y = 112, speed = 0.0045 },
-}
-
-local fieldBirds = {
-	{ y = 58, speed = 0.022, offset = 0, size = 4 },
-	{ y = 66, speed = 0.022, offset = 18, size = 3 },
-}
-
-local butterflies = {
-	{ x = 120, y = 196, range = 50, speed = 1 / 2300, phase = 0 },
-	{ x = 300, y = 190, range = 40, speed = 1 / 1900, phase = 2.1 },
-}
-
-local fireflies = {}
-for i = 1, 9 do
-	fireflies[i] = { x = 20 + (i * 43) % 360, y = 150 + (i * 17) % 52, phase = i * 1.7 }
-end
-
--- Rolling hills: the top edge at x for a layer
-local hillLayers = {
-	far = { base = 184, a1 = 9, f1 = 70, a2 = 4, f2 = 31, phase = 0.0, alpha = 0.1 },
-	near = { base = 200, a1 = 7, f1 = 45, a2 = 3, f2 = 19, phase = 2.0, alpha = 0.22 },
-}
-local function hillTop(l, x)
-	return math.floor(l.base - math.sin(x / l.f1 + l.phase) * l.a1 - math.sin(x / l.f2 + l.phase * 2) * l.a2)
-end
-
--- Platform rectangles (x, y = top-left), set by main.lua so vines can hang underneath
-local fieldPlatforms = {}
-function UI.setPlatforms(list)
-	fieldPlatforms = list
-end
-
--- Static layers, drawn once into images
-local sunImage, moonImage, landImage = nil, nil, nil
-local cloudImages = {}
-
--- Puffy cloud: black outline around the union of puffs, white body, dithered underside
-local function buildCloud(scale)
-	local puffs = { { 9, 14, 8 }, { 20, 9, 10 }, { 33, 11, 9 }, { 43, 15, 7 } }
-	local w, h = math.ceil(54 * scale), math.ceil(28 * scale)
-	local img = gfx.image.new(w, h, gfx.kColorClear)
-	gfx.pushContext(img)
-		local function body(grow)
-			for _, p in ipairs(puffs) do
-				gfx.fillCircleAtPoint(p[1] * scale, p[2] * scale, p[3] * scale + grow)
-			end
-			gfx.fillRoundRect(4 * scale - grow, 14 * scale - grow, 42 * scale + grow * 2, 9 * scale + grow * 2, 4 * scale)
-		end
-		gfx.setColor(gfx.kColorBlack)
-		body(1)
-		gfx.setColor(gfx.kColorWhite)
-		body(0)
-		-- shade the bottom third
-		gfx.setClipRect(0, math.floor(17 * scale), w, h)
-		dither(0.2)
-		for _, p in ipairs(puffs) do
-			gfx.fillCircleAtPoint(p[1] * scale, p[2] * scale, p[3] * scale - 1)
-		end
-		gfx.fillRoundRect(5 * scale, 15 * scale, 40 * scale, 7 * scale, 3 * scale)
-		gfx.clearClipRect()
-	gfx.popContext()
-	return img
-end
-
--- A hill layer: white fill (hides what's behind), dithered grey on top, and a crisp ridge line
-local function drawHill(l)
-	gfx.setColor(gfx.kColorWhite)
-	for x = 0, W - 1 do
-		local top = hillTop(l, x)
-		gfx.fillRect(x, top, 1, FIELD_GROUND_Y - top)
-	end
-	dither(l.alpha)
-	for x = 0, W - 1 do
-		local top = hillTop(l, x)
-		gfx.fillRect(x, top, 1, FIELD_GROUND_Y - top)
-	end
-	gfx.setColor(gfx.kColorBlack)
-	for x = 0, W - 1 do gfx.drawPixel(x, hillTop(l, x)) end
-end
+-- Static layers are drawn once into images
+local sunImage = nil
+local moonImage = nil
+local landImage = nil -- hills, flowers, grass tufts
 
 local function buildFieldImages()
 	-- Sun with short rays
@@ -863,155 +791,38 @@ local function buildFieldImages()
 		gfx.drawCircleAtPoint(13, 22, 1)
 	gfx.popContext()
 
-	cloudImages = { buildCloud(1.0), buildCloud(0.8), buildCloud(0.6) }
-
 	landImage = gfx.image.new(W, H, gfx.kColorClear)
 	gfx.pushContext(landImage)
-		-- Distant mountains with snowcaps and a dotted ridge line
-		local peaks = {
-			{ -10, 178 }, { 38, 150 }, { 72, 168 }, { 118, 136 }, { 162, 164 }, { 204, 146 },
-			{ 244, 170 }, { 290, 130 }, { 336, 160 }, { 372, 144 }, { 410, 172 },
+		-- Far hills (lighter), then near hills (a little darker)
+		local layers = {
+			{ base = 178, a1 = 10, f1 = 70, a2 = 5, f2 = 31, phase = 0.0, alpha = 0.08 },
+			{ base = 196, a1 = 8, f1 = 45, a2 = 4, f2 = 19, phase = 2.0, alpha = 0.17 },
 		}
-		local poly = {}
-		for _, pt in ipairs(peaks) do
-			table.insert(poly, pt[1]); table.insert(poly, pt[2])
-		end
-		table.insert(poly, 410); table.insert(poly, FIELD_GROUND_Y)
-		table.insert(poly, -10); table.insert(poly, FIELD_GROUND_Y)
-		dither(0.07)
-		gfx.fillPolygon(table.unpack(poly))
-		for i = 2, #peaks - 1 do
-			local px, py = peaks[i][1], peaks[i][2]
-			local prev, nxt = peaks[i - 1], peaks[i + 1]
-			if py < prev[2] and py < nxt[2] then
-				-- Snowcap: the top 12px of the peak, with a zigzag lower edge
-				local depth = 12
-				local tl = depth / (prev[2] - py)
-				local tr = depth / (nxt[2] - py)
-				local lx, ly = px + (prev[1] - px) * tl, py + (prev[2] - py) * tl
-				local rx, ry = px + (nxt[1] - px) * tr, py + (nxt[2] - py) * tr
-				gfx.setColor(gfx.kColorWhite)
-				gfx.fillPolygon(px, py, rx, ry, (px + rx) / 2, ry - 4, px, ry + 1, (px + lx) / 2, ly - 4, lx, ly)
+		for _, l in ipairs(layers) do
+			dither(l.alpha)
+			for x = 0, W - 1, 2 do
+				local top = l.base - math.sin(x / l.f1 + l.phase) * l.a1 - math.sin(x / l.f2 + l.phase * 2) * l.a2
+				gfx.fillRect(x, math.floor(top), 2, FIELD_GROUND_Y - math.floor(top))
 			end
 		end
-		dither(0.5)
-		for i = 1, #peaks - 1 do
-			gfx.drawLine(peaks[i][1], peaks[i][2], peaks[i + 1][1], peaks[i + 1][2])
-		end
 
-		-- Far hills with little pine trees
-		local far = hillLayers.far
-		drawHill(far)
-		for _, tx in ipairs({ 14, 30, 96, 108, 182, 228, 240, 318, 352, 386 }) do
-			local base = hillTop(far, tx) + 2
-			local hgt = 9 + (tx % 3) * 2
-			dither(0.45)
-			gfx.fillTriangle(tx, base - hgt, tx - 4, base - hgt / 2, tx + 4, base - hgt / 2)
-			gfx.fillTriangle(tx, base - hgt * 0.7, tx - 5, base, tx + 5, base)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawLine(tx, base - hgt, tx, base)
-		end
-
-		-- Near hills with round trees and bushes
-		local near = hillLayers.near
-		drawHill(near)
-		for _, tree in ipairs({ { 52, 7 }, { 146, 9 }, { 268, 8 }, { 362, 6 } }) do
-			local tx, r = tree[1], tree[2]
-			local base = hillTop(near, tx) + 3
-			gfx.setColor(gfx.kColorBlack)
-			gfx.fillRect(tx - 1, base - r - 4, 2, r + 4) -- trunk
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillCircleAtPoint(tx, base - r * 2 - 2, r)
-			dither(0.3)
-			gfx.fillCircleAtPoint(tx + 1, base - r * 2, r - 2)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawCircleAtPoint(tx, base - r * 2 - 2, r)
-		end
-		for _, bx in ipairs({ 8, 100, 206, 314 }) do
-			local base = FIELD_GROUND_Y
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillCircleAtPoint(bx, base, 6)
-			gfx.fillCircleAtPoint(bx + 8, base, 5)
-			dither(0.35)
-			gfx.fillCircleAtPoint(bx, base + 1, 5)
-			gfx.fillCircleAtPoint(bx + 8, base + 1, 4)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawCircleAtPoint(bx, base, 6)
-			gfx.drawCircleAtPoint(bx + 8, base, 5)
-		end
-
-		-- Grass along the ground edge: blades of varying height
+		-- Grass tufts along the ground
 		gfx.setColor(gfx.kColorBlack)
-		for x = 0, W - 1, 2 do
-			local h = 1 + ((x * 7) % 11) // 3
-			if (x // 2) % 5 == 0 then h += 2 end
-			gfx.drawLine(x, FIELD_GROUND_Y - 1, x + ((x % 4 == 0) and 1 or 0), FIELD_GROUND_Y - h)
+		for x = 3, W, 17 do
+			gfx.fillTriangle(x, FIELD_GROUND_Y, x + 2, FIELD_GROUND_Y - 4, x + 4, FIELD_GROUND_Y)
+			gfx.fillTriangle(x + 4, FIELD_GROUND_Y, x + 6, FIELD_GROUND_Y - 3, x + 8, FIELD_GROUND_Y)
 		end
 
-		-- Daisies
-		for _, fx in ipairs({ 36, 171, 302 }) do
-			local stem = 7
+		-- A few little flowers
+		for _, fx in ipairs({ 36, 118, 171, 247, 302, 371 }) do
+			local stem = (fx % 3 == 0) and 7 or 5
 			gfx.setColor(gfx.kColorBlack)
 			gfx.drawLine(fx, FIELD_GROUND_Y - 1, fx, FIELD_GROUND_Y - stem)
-			gfx.drawLine(fx, FIELD_GROUND_Y - 3, fx + 2, FIELD_GROUND_Y - 5) -- leaf
-			local cy = FIELD_GROUND_Y - stem - 3
-			for i = 0, 5 do
-				local a = i / 6 * math.pi * 2
-				gfx.setColor(gfx.kColorWhite)
-				gfx.fillCircleAtPoint(fx + math.cos(a) * 2.5, cy + math.sin(a) * 2.5, 1.5)
-				gfx.setColor(gfx.kColorBlack)
-				gfx.drawCircleAtPoint(fx + math.cos(a) * 2.5, cy + math.sin(a) * 2.5, 1.5)
-			end
-			gfx.fillCircleAtPoint(fx, cy, 1.5)
-		end
-		-- Tulips
-		for _, fx in ipairs({ 118, 247, 371 }) do
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawLine(fx, FIELD_GROUND_Y - 1, fx, FIELD_GROUND_Y - 6)
-			gfx.fillTriangle(fx - 3, FIELD_GROUND_Y - 10, fx + 3, FIELD_GROUND_Y - 10, fx, FIELD_GROUND_Y - 6)
-			gfx.fillTriangle(fx - 3, FIELD_GROUND_Y - 12, fx - 1, FIELD_GROUND_Y - 9, fx - 3, FIELD_GROUND_Y - 9)
-			gfx.fillTriangle(fx + 3, FIELD_GROUND_Y - 12, fx + 1, FIELD_GROUND_Y - 9, fx + 3, FIELD_GROUND_Y - 9)
-			gfx.fillTriangle(fx, FIELD_GROUND_Y - 12, fx - 1, FIELD_GROUND_Y - 9, fx + 1, FIELD_GROUND_Y - 9)
-		end
-		-- Mushrooms
-		for _, mx in ipairs({ 74, 225, 344 }) do
-			local base = FIELD_GROUND_Y
 			gfx.setColor(gfx.kColorWhite)
-			gfx.fillRect(mx - 1, base - 5, 3, 5) -- stem
+			gfx.fillCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
 			gfx.setColor(gfx.kColorBlack)
-			gfx.drawRect(mx - 2, base - 5, 5, 5)
-			gfx.fillRoundRect(mx - 5, base - 10, 11, 6, 3) -- cap
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillRect(mx - 3, base - 8, 2, 2) -- spots
-			gfx.fillRect(mx + 2, base - 9, 2, 1)
-		end
-		-- Rocks
-		for _, rx in ipairs({ 134, 286, 392 }) do
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillRoundRect(rx - 4, FIELD_GROUND_Y - 5, 9, 6, 3)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawRoundRect(rx - 4, FIELD_GROUND_Y - 5, 9, 6, 3)
-			gfx.drawPixel(rx - 1, FIELD_GROUND_Y - 3)
-		end
-
-		-- Vines hanging under some platforms
-		for i, plat in ipairs(fieldPlatforms) do
-			if i % 2 == 1 or plat.w >= 60 then
-				local bottom = plat.y + plat.h
-				for v = 0, (plat.w >= 60) and 1 or 0 do
-					local vx = plat.x + 6 + v * (plat.w - 14)
-					local len = 8 + ((i + v) * 5) % 9
-					gfx.setColor(gfx.kColorBlack)
-					for yy = 0, len do
-						gfx.drawPixel(vx + math.floor(math.sin(yy / 2.5 + i) * 1.5 + 0.5), bottom + yy)
-					end
-					for yy = 3, len, 4 do
-						local lx = vx + math.floor(math.sin(yy / 2.5 + i) * 1.5 + 0.5)
-						local side = ((yy // 4) % 2 == 0) and 1 or -1
-						gfx.fillRect(lx + ((side > 0) and 1 or -2), bottom + yy, 2, 2)
-					end
-				end
-			end
+			gfx.drawCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
+			gfx.drawPixel(fx, FIELD_GROUND_Y - stem - 2)
 		end
 	gfx.popContext()
 	gfx.setColor(gfx.kColorBlack)
@@ -1024,27 +835,6 @@ local function bird(x, y, size, flapUp)
 	gfx.drawLine(x, y, x + size, wingY)
 end
 
-local function butterfly(x, y, open)
-	gfx.setColor(gfx.kColorBlack)
-	gfx.drawLine(x, y - 1, x, y + 1) -- body
-	if open then
-		gfx.fillTriangle(x - 1, y, x - 4, y - 3, x - 4, y + 1)
-		gfx.fillTriangle(x + 1, y, x + 4, y - 3, x + 4, y + 1)
-	else
-		gfx.drawLine(x - 1, y - 1, x - 2, y - 3)
-		gfx.drawLine(x + 1, y - 1, x + 2, y - 3)
-	end
-end
-
-local function firefly(x, y, glow)
-	if glow then
-		dither(0.35)
-		gfx.fillCircleAtPoint(x, y, 3)
-	end
-	gfx.setColor(gfx.kColorBlack)
-	gfx.fillRect(x, y, 2, 2)
-end
-
 -- Position along the east-to-west arc for progress p (0 = rising in the east, 1 = setting in the west)
 local function arcPosition(p)
 	local x = (W + 26) - p * (W + 52)
@@ -1052,11 +842,12 @@ local function arcPosition(p)
 	return math.floor(x), math.floor(y)
 end
 
-local function drawStars(nightStrength, t)
+local function drawStars(nightProgress, t)
 	-- Stars fade in after moonrise and out before sunrise, a few at a time
+	local strength = math.sin(nightProgress * math.pi)
 	gfx.setColor(gfx.kColorBlack)
 	for i, star in ipairs(stars) do
-		if nightStrength > 0.1 + (i / #stars) * 0.5 then
+		if strength > 0.1 + (i / #stars) * 0.5 then
 			local x, y = star[1], star[2]
 			if ((t // 450) + i) % 4 == 0 then
 				gfx.drawPixel(x, y) -- twinkle
@@ -1073,59 +864,30 @@ function UI.drawPlayfield(gameSeconds)
 	if not sunImage then buildFieldImages() end
 	local t = now()
 
+	-- Sun by day, moon (and stars) by night
 	local cycle = (gameSeconds or 0) % (SUN_SECONDS + MOON_SECONDS)
-	local isDay = cycle < SUN_SECONDS
-	local progress = isDay and (cycle / SUN_SECONDS) or ((cycle - SUN_SECONDS) / MOON_SECONDS)
-	local nightStrength = isDay and 0 or math.sin(progress * math.pi)
-
-	-- Sky dims gently at night
-	if nightStrength > 0.05 then
-		dither(NIGHT_TINT * nightStrength)
-		gfx.fillRect(0, 0, W, FIELD_GROUND_Y)
-	end
-
-	-- Sun by day, moon and stars by night
-	local x, y = arcPosition(progress)
-	if isDay then
+	if cycle < SUN_SECONDS then
+		local x, y = arcPosition(cycle / SUN_SECONDS)
 		sunImage:draw(x - 25, y - 25)
 	else
-		drawStars(nightStrength, t)
+		local p = (cycle - SUN_SECONDS) / MOON_SECONDS
+		drawStars(p, t)
+		local x, y = arcPosition(p)
 		moonImage:draw(x - 15, y - 15)
 	end
 
 	for _, c in ipairs(fieldClouds) do
-		local cx = (c.x + t * c.speed) % (W + 110) - 60
-		cloudImages[c.kind]:draw(math.floor(cx), c.y)
+		local x = (c.x + t * c.speed) % (W + 90) - 50
+		cloud(x, c.y, c.s, 0.15)
 	end
 
-	if isDay then
-		for _, b in ipairs(fieldBirds) do
-			local bx = (t * b.speed + b.offset) % (W + 160) - 40
-			local flap = ((t // 220) + b.offset) % 2 == 0
-			bird(bx, b.y + math.sin(t / 400 + b.offset) * 2, b.size, flap)
-		end
+	for _, b in ipairs(fieldBirds) do
+		local x = (t * b.speed + b.offset) % (W + 160) - 40
+		local flap = ((t // 220) + b.offset) % 2 == 0
+		bird(x, b.y + math.sin(t / 400 + b.offset) * 2, b.size, flap)
 	end
 
 	landImage:draw(0, 0)
-
-	if isDay then
-		for _, b in ipairs(butterflies) do
-			local a = t * b.speed + b.phase
-			local bx = b.x + math.sin(a) * b.range
-			local by = b.y + math.sin(a * 3.1) * 6
-			butterfly(math.floor(bx), math.floor(by), (t // 120 + math.floor(b.phase * 10)) % 2 == 0)
-		end
-	elseif nightStrength > 0.15 then
-		for i, f in ipairs(fireflies) do
-			if (i / #fireflies) < nightStrength + 0.1 then
-				local a = t / 1600 + f.phase
-				local fx = f.x + math.sin(a) * 14
-				local fy = f.y + math.sin(a * 1.7) * 6
-				firefly(math.floor(fx), math.floor(fy), ((t // 260) + i * 3) % 5 ~= 0)
-			end
-		end
-	end
-
 	gfx.setColor(gfx.kColorBlack)
 end
 

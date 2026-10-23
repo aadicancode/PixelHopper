@@ -254,20 +254,6 @@ local function hoppingBunny(images)
 	if img then img:draw(math.floor(x - 10), math.floor(GROUND_Y - 24 - hop)) end
 end
 
--- Upside-down bunny lying on the ground with dizzy stars circling
-local function dizzyBunny(images, cx)
-	if images.bunnyDead then images.bunnyDead:draw(cx - 10, GROUND_Y - 24) end
-	local t = now() / 300
-	for i = 0, 2 do
-		local a = t + i * (math.pi * 2 / 3)
-		local sx = cx + math.cos(a) * 16
-		local sy = GROUND_Y - 30 + math.sin(a) * 4
-		gfx.setColor(gfx.kColorBlack)
-		gfx.fillRect(sx - 1, sy - 3, 2, 6)
-		gfx.fillRect(sx - 3, sy - 1, 6, 2)
-	end
-end
-
 -------------------------------------------------------
 -- Vertical pill menu (main menu)
 -------------------------------------------------------
@@ -408,7 +394,6 @@ local function drawDeathScreen(s)
 	end
 
 	horizontalMenu({ "RETRY", "SCORES", "AWARDS", "MENU" }, s.menuSelection, W / 2, 148)
-	dizzyBunny(s.images, 366)
 	hints({ { "LR", "MOVE" }, { "A", "SELECT" }, { "B", "RETRY" } }, W / 2 - 30, 214, true)
 end
 

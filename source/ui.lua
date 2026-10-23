@@ -266,14 +266,14 @@ local function verticalMenu(options, selected, cx, y, rowH, images)
 			local pillW = math.max(150, w + 40)
 			gfx.setColor(gfx.kColorBlack)
 			gfx.fillRoundRect(cx - pillW / 2, rowY, pillW, rowH - 4, (rowH - 4) / 2)
-			textCentered(fonts.label, label, cx, rowY + 3, true)
+			textCentered(fonts.label, label, cx, rowY + 5, true)
 			-- carrot pointer that nudges left and right
 			local nudge = math.floor(math.sin(t / 140) * 3 + 0.5)
 			if images.carrot then
 				images.carrot:draw(cx - pillW / 2 - 22 + nudge, rowY + (rowH - 4) / 2 - 8)
 			end
 		else
-			textCentered(fonts.label, label, cx, rowY + 3)
+			textCentered(fonts.label, label, cx, rowY + 5)
 		end
 	end
 end
@@ -294,7 +294,7 @@ local function horizontalMenu(options, selected, cx, y)
 			gfx.fillRoundRect(x + 3, y + 3, w, 22, 11)
 			gfx.setColor(gfx.kColorBlack)
 			gfx.fillRoundRect(x, y, w, 22, 11)
-			textCentered(fonts.label, label, x + w / 2, y + 5, true)
+			textCentered(fonts.label, label, x + w / 2, y + 6, true)
 		else
 			gfx.setColor(gfx.kColorWhite)
 			gfx.fillRoundRect(x, y, w, 22, 11)
@@ -302,7 +302,7 @@ local function horizontalMenu(options, selected, cx, y)
 			gfx.setLineWidth(2)
 			gfx.drawRoundRect(x, y, w, 22, 11)
 			gfx.setLineWidth(1)
-			textCentered(fonts.label, label, x + w / 2, y + 5)
+			textCentered(fonts.label, label, x + w / 2, y + 6)
 		end
 		x += w + gap
 	end
@@ -389,7 +389,7 @@ local function drawDeathScreen(s)
 			gfx.setLineWidth(2)
 			gfx.drawRoundRect(bx + 2, by + 2, bw - 4, bh - 4, 8)
 			gfx.setLineWidth(1)
-			textCentered(fonts.label, "NEW BEST!", W / 2, by + 4, true)
+			textCentered(fonts.label, "NEW BEST!", W / 2, by + 5, true)
 		end
 	end
 
@@ -481,12 +481,12 @@ local function drawLeaderboard(s)
 			gfx.setLineWidth(2)
 			gfx.drawRoundRect(tx, 5, w, 20, 10)
 			gfx.setLineWidth(1)
-			textCentered(fonts.label, label, tx + w / 2, 9, true)
+			textCentered(fonts.label, label, tx + w / 2, 10, true)
 		else
 			-- No pill, greyed-out text
 			local img = greyLabelImage(label)
 			local imgW = img:getSize()
-			img:drawFaded(math.floor(tx + w / 2 - imgW / 2), 9, 0.5, gfx.image.kDitherTypeBayer2x2)
+			img:drawFaded(math.floor(tx + w / 2 - imgW / 2), 10, 0.5, gfx.image.kDitherTypeBayer2x2)
 		end
 		tx += w + 6
 		-- Online scores downloading or a run uploading: small spinner right beside the ONLINE tab
@@ -632,11 +632,11 @@ local function drawAchievements(s)
 		if a.unlocked then
 			gfx.setColor(gfx.kColorBlack)
 			gfx.fillRoundRect(tagX, y + 7, tagW, 16, 8)
-			textCentered(fonts.label, tag, tagX + tagW / 2, y + 9, true)
+			textCentered(fonts.label, tag, tagX + tagW / 2, y + 10, true)
 		else
 			gfx.setColor(gfx.kColorBlack)
 			gfx.drawRoundRect(tagX, y + 7, tagW, 16, 8)
-			textCentered(fonts.label, tag, tagX + tagW / 2, y + 9)
+			textCentered(fonts.label, tag, tagX + tagW / 2, y + 10)
 		end
 	end
 
@@ -670,7 +670,7 @@ local function drawHUD(s)
 	-- Timer pill (fixed width so it doesn't jitter)
 	local timeW = textWidth(fonts.label, "00:00:00") + 18
 	hudPill(4, 4, timeW, false)
-	text(fonts.label, s.formatTime(s.elapsedTime), 14, 8)
+	text(fonts.label, s.formatTime(s.elapsedTime), 14, 9)
 
 	-- Carrot pill: flashes inverted briefly on pickup, with a floating "+N"
 	local popAge = now() - carrotPopMs
@@ -683,7 +683,7 @@ local function drawHUD(s)
 		local bob = popping and -2 or 0
 		s.images.carrot:draw(px + 6, 6 + bob)
 	end
-	text(fonts.label, countText, px + 26, 8, popping)
+	text(fonts.label, countText, px + 26, 9, popping)
 
 	if popAge < 700 then
 		local rise = easeOutCubic(popAge / 700) * 14

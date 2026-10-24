@@ -455,6 +455,39 @@ local function miniSpinner(cx, cy)
 	end
 end
 
+-- Tips shown while something is loading. The first one each session is always the bunny cloud.
+local LOADING_TIPS = {
+	"Keep one eye on the sky. Once in a blue moon, a bunny-shaped cloud drifts by...",
+	"White carrots are worth 3, but they don't stick around for long!",
+	"Hold A to jump higher, or tap it for a quick hop.",
+	"Ran off a ledge? You can still jump for a split second after.",
+	"Hazards flash before they turn dangerous. That's your cue to move!",
+	"Saws ride up the walls and turn back at the ceiling. Mind the corners!",
+}
+local currentTip = nil
+local tipsShown = 0
+
+local function pickTip()
+	tipsShown += 1
+	if tipsShown == 1 then return LOADING_TIPS[1] end
+	return LOADING_TIPS[math.random(1, #LOADING_TIPS)]
+end
+
+-- A "TIP" card: rounded panel with a small label and centered text
+local function tipCard(tip, y)
+	local x, w, h = 32, W - 64, 82
+	gfx.setColor(gfx.kColorBlack)
+	gfx.setLineWidth(1)
+	gfx.drawRoundRect(x, y, w, h, 8)
+	local labelW = textWidth(fonts.label, "TIP") + 16
+	gfx.setColor(gfx.kColorWhite)
+	gfx.fillRect(W / 2 - labelW / 2, y - 7, labelW, 14)
+	gfx.setColor(gfx.kColorBlack)
+	gfx.fillRoundRect(W / 2 - labelW / 2, y - 7, labelW, 14, 7)
+	textCentered(fonts.label, "TIP", W / 2, y - 6, true)
+	gfx.drawTextInRect(tip, x + 10, y + 12, w - 20, h - 14, nil, nil, kTextAlignment.center, fonts.body)
+end
+
 local function drawLeaderboard(s)
 	local isOnline = s.leaderboardTab == "online"
 	local online = s.online
@@ -517,14 +550,22 @@ local function drawLeaderboard(s)
 		message = "No scores yet.\nGo hop some carrots!"
 	end
 
+	-- Pick a new tip each time loading starts, and keep it until loading finishes
+	if showSpinner then
+		currentTip = currentTip or pickTip()
+	else
+		currentTip = nil
+	end
+
 	if message then
-		local cy = 120
+		local cy = showSpinner and 70 or 120
 		if showSpinner then
 			spinner(W / 2, cy - 18)
 		elseif s.images.carrot then
 			s.images.carrot:draw(W / 2 - 8, cy - 28)
 		end
 		gfx.drawTextInRect(message, 40, cy, W - 80, 50, nil, nil, kTextAlignment.center, fonts.bold)
+		if showSpinner then tipCard(currentTip, 116) end
 	else
 		-- Column labels
 		text(fonts.label, "#", 18, listTop)

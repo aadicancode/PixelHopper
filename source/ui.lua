@@ -722,8 +722,9 @@ local function drawToast(s)
 end
 
 -------------------------------------------------------
--- Gameplay backdrop: sun, drifting clouds, birds, rolling hills, flowers and grass.
--- Kept to light greys so hazards (bold black) stay easy to read.
+-- Gameplay backdrop: sun/moon, drifting clouds, birds, a hot-air balloon, distant mountains,
+-- rolling hills with tree silhouettes, flowers and grass.
+-- Everything far back is soft grey with no outlines, so hazards (bold black) stay easy to read.
 -------------------------------------------------------
 local FIELD_GROUND_Y <const> = 216 -- matches GROUND_TOP in main.lua
 
@@ -753,10 +754,19 @@ local stars = {
 	{ 290, 34 }, { 336, 72 }, { 362, 40 }, { 62, 96 }, { 156, 88 }, { 306, 102 },
 }
 
+-- Hot-air balloon (daytime): drifts very slowly across the sky
+local BALLOON_SPEED <const> = 0.004 -- px per ms
+local BALLOON_Y <const> = 78
+
+-- Shooting star (night): one streak every SHOOTING_STAR_EVERY ms, lasting SHOOTING_STAR_MS
+local SHOOTING_STAR_EVERY <const> = 7000
+local SHOOTING_STAR_MS <const> = 600
+
 -- Static layers are drawn once into images
 local sunImage = nil
 local moonImage = nil
-local landImage = nil -- hills, flowers, grass tufts
+local mountainImage = nil -- distant mountains (drawn behind the clouds)
+local landImage = nil -- hills with tree silhouettes, flowers, grass tufts
 
 local function buildFieldImages()
 	-- Sun with short rays
@@ -791,6 +801,36 @@ local function buildFieldImages()
 		gfx.drawCircleAtPoint(13, 22, 1)
 	gfx.popContext()
 
+	-- Distant mountains: a soft grey silhouette with white snowy tips, no outlines
+	mountainImage = gfx.image.new(W, H, gfx.kColorClear)
+	gfx.pushContext(mountainImage)
+		local peaks = {
+			{ -10, 180 }, { 40, 152 }, { 76, 170 }, { 120, 140 }, { 164, 166 }, { 206, 150 },
+			{ 246, 172 }, { 292, 136 }, { 338, 162 }, { 374, 148 }, { 410, 176 },
+		}
+		local poly = {}
+		for _, pt in ipairs(peaks) do
+			table.insert(poly, pt[1]); table.insert(poly, pt[2])
+		end
+		table.insert(poly, 410); table.insert(poly, FIELD_GROUND_Y)
+		table.insert(poly, -10); table.insert(poly, FIELD_GROUND_Y)
+		dither(0.06)
+		gfx.fillPolygon(table.unpack(poly))
+		-- snowy tips: the top 8px of each peak left white
+		gfx.setColor(gfx.kColorWhite)
+		for i = 2, #peaks - 1 do
+			local px, py = peaks[i][1], peaks[i][2]
+			local prev, nxt = peaks[i - 1], peaks[i + 1]
+			if py < prev[2] and py < nxt[2] then
+				local tl = 8 / (prev[2] - py)
+				local tr = 8 / (nxt[2] - py)
+				gfx.fillTriangle(px, py,
+					px + (prev[1] - px) * tl, py + 8,
+					px + (nxt[1] - px) * tr, py + 8)
+			end
+		end
+	gfx.popContext()
+
 	landImage = gfx.image.new(W, H, gfx.kColorClear)
 	gfx.pushContext(landImage)
 		-- Far hills (lighter), then near hills (a little darker)
@@ -798,12 +838,31 @@ local function buildFieldImages()
 			{ base = 178, a1 = 10, f1 = 70, a2 = 5, f2 = 31, phase = 0.0, alpha = 0.08 },
 			{ base = 196, a1 = 8, f1 = 45, a2 = 4, f2 = 19, phase = 2.0, alpha = 0.17 },
 		}
+		local function hillTop(l, x)
+			return math.floor(l.base - math.sin(x / l.f1 + l.phase) * l.a1 - math.sin(x / l.f2 + l.phase * 2) * l.a2)
+		end
 		for _, l in ipairs(layers) do
 			dither(l.alpha)
 			for x = 0, W - 1, 2 do
-				local top = l.base - math.sin(x / l.f1 + l.phase) * l.a1 - math.sin(x / l.f2 + l.phase * 2) * l.a2
-				gfx.fillRect(x, math.floor(top), 2, FIELD_GROUND_Y - math.floor(top))
+				local top = hillTop(l, x)
+				gfx.fillRect(x, top, 2, FIELD_GROUND_Y - top)
 			end
+		end
+
+		-- Tree silhouettes, a shade darker than the hill they stand on (no outlines)
+		dither(0.14)
+		for _, tx in ipairs({ 16, 30, 98, 184, 230, 244, 320, 354, 388 }) do
+			local base = hillTop(layers[1], tx) + 2
+			local hgt = 9 + (tx % 3) * 2
+			gfx.fillTriangle(tx, base - hgt, tx - 4, base - hgt / 2, tx + 4, base - hgt / 2)
+			gfx.fillTriangle(tx, base - hgt * 0.7, tx - 5, base, tx + 5, base)
+		end
+		dither(0.28)
+		for _, tree in ipairs({ { 54, 6 }, { 148, 8 }, { 270, 7 }, { 364, 5 } }) do
+			local tx, r = tree[1], tree[2]
+			local base = hillTop(layers[2], tx) + 3
+			gfx.fillRect(tx - 1, base - r - 3, 2, r + 3) -- trunk
+			gfx.fillCircleAtPoint(tx, base - r * 2 - 1, r)
 		end
 
 		-- Grass tufts along the ground
@@ -826,6 +885,30 @@ local function buildFieldImages()
 		end
 	gfx.popContext()
 	gfx.setColor(gfx.kColorBlack)
+end
+
+-- Small soft-grey hot-air balloon, no outline
+local function balloon(x, y)
+	dither(0.18)
+	gfx.fillCircleAtPoint(x, y, 7)
+	gfx.fillTriangle(x - 6, y + 3, x + 6, y + 3, x, y + 10)
+	dither(0.4)
+	gfx.fillRect(x - 2, y + 12, 4, 3) -- basket
+	gfx.drawLine(x - 2, y + 9, x - 2, y + 12)
+	gfx.drawLine(x + 1, y + 9, x + 1, y + 12)
+end
+
+-- A faint streak across the upper sky, now and then at night
+local function shootingStar(t)
+	local cycleT = t % SHOOTING_STAR_EVERY
+	if cycleT > SHOOTING_STAR_MS then return end
+	local n = t // SHOOTING_STAR_EVERY
+	local startX = 60 + (n * 97) % 260
+	local startY = 14 + (n * 31) % 40
+	local p = cycleT / SHOOTING_STAR_MS
+	local headX, headY = startX + p * 70, startY + p * 26
+	dither(0.45)
+	gfx.drawLine(headX - 14, headY - 5, headX, headY)
 end
 
 local function bird(x, y, size, flapUp)
@@ -872,13 +955,21 @@ function UI.drawPlayfield(gameSeconds)
 	else
 		local p = (cycle - SUN_SECONDS) / MOON_SECONDS
 		drawStars(p, t)
+		if math.sin(p * math.pi) > 0.3 then shootingStar(t) end
 		local x, y = arcPosition(p)
 		moonImage:draw(x - 15, y - 15)
 	end
 
+	mountainImage:draw(0, 0)
+
 	for _, c in ipairs(fieldClouds) do
 		local x = (c.x + t * c.speed) % (W + 90) - 50
 		cloud(x, c.y, c.s, 0.15)
+	end
+
+	if cycle < SUN_SECONDS then
+		local bx = (t * BALLOON_SPEED) % (W + 60) - 30
+		balloon(math.floor(bx), math.floor(BALLOON_Y + math.sin(t / 1500) * 3))
 	end
 
 	for _, b in ipairs(fieldBirds) do

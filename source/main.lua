@@ -1487,6 +1487,7 @@ local deathVelocity = 0
 
 -- reset everything for restart
 local function restartGame()
+	UI.newRun() -- new roll for the rare bunny cloud
 	-- remove arrows
 	for i = #arrows, 1, -1 do
 		local a = arrows[i]

@@ -758,6 +758,21 @@ local stars = {
 local BALLOON_SPEED <const> = 0.004 -- px per ms
 local BALLOON_Y <const> = 78
 
+-- More slow drifters, all soft grey with no outlines
+local SMALL_BALLOON_SPEED <const> = 0.0025 -- a smaller, farther balloon drifting the other way
+local SMALL_BALLOON_Y <const> = 42
+local BLIMP_SPEED <const> = 0.003
+local BLIMP_Y <const> = 104
+local UFO_EVERY <const> = 20000 -- at night, a little UFO wobbles across once every this many ms
+local UFO_CROSSING_MS <const> = 9000
+
+-- Super rare bunny-shaped cloud: each minute of a run has this chance of one drifting across
+UI.BUNNY_CLOUD_CHANCE = 0.05
+local runSeed = 0
+function UI.newRun()
+	runSeed = math.random(1, 100000)
+end
+
 -- Shooting star (night): one streak every SHOOTING_STAR_EVERY ms, lasting SHOOTING_STAR_MS
 local SHOOTING_STAR_EVERY <const> = 7000
 local SHOOTING_STAR_MS <const> = 600
@@ -898,6 +913,53 @@ local function balloon(x, y)
 	gfx.drawLine(x + 1, y + 9, x + 1, y + 12)
 end
 
+-- Smaller, paler balloon with a white stripe, further away
+local function smallBalloon(x, y)
+	dither(0.12)
+	gfx.fillCircleAtPoint(x, y, 4)
+	gfx.fillTriangle(x - 3, y + 2, x + 3, y + 2, x, y + 6)
+	gfx.setColor(gfx.kColorWhite)
+	gfx.drawLine(x - 4, y, x + 4, y)
+	dither(0.3)
+	gfx.fillRect(x - 1, y + 7, 2, 2)
+end
+
+-- Little blimp: a soft grey body with tail fins and a gondola underneath
+local function blimp(x, y)
+	dither(0.16)
+	gfx.fillEllipseInRect(x - 18, y - 7, 36, 14)
+	gfx.fillTriangle(x + 14, y - 1, x + 23, y - 8, x + 23, y + 6)
+	dither(0.3)
+	gfx.fillRect(x - 5, y + 8, 10, 4)
+end
+
+-- Little UFO: a saucer with a dome
+local function ufo(x, y)
+	dither(0.15)
+	gfx.fillCircleAtPoint(x, y - 3, 6)
+	dither(0.3)
+	gfx.fillEllipseInRect(x - 13, y - 1, 26, 7)
+end
+
+-- Bunny-shaped cloud: round head, cheeks and two tall ears, same soft grey as the clouds
+local function bunnyCloud(x, y)
+	dither(0.15)
+	gfx.fillEllipseInRect(x - 9, y - 32, 7, 22) -- ears
+	gfx.fillEllipseInRect(x + 2, y - 30, 7, 20)
+	gfx.fillCircleAtPoint(x, y, 11) -- head
+	gfx.fillCircleAtPoint(x - 9, y + 4, 7) -- cheeks
+	gfx.fillCircleAtPoint(x + 9, y + 4, 7)
+	gfx.setColor(gfx.kColorWhite) -- eyes
+	gfx.fillCircleAtPoint(x - 4, y - 2, 1.5)
+	gfx.fillCircleAtPoint(x + 4, y - 2, 1.5)
+end
+
+-- Deterministic 0..1 roll for a given minute of the current run
+local function rareRoll(n)
+	local v = math.sin(n * 12.9898 + runSeed * 78.233) * 43758.5453
+	return v - math.floor(v)
+end
+
 -- A faint streak across the upper sky, now and then at night
 local function shootingStar(t)
 	local cycleT = t % SHOOTING_STAR_EVERY
@@ -967,9 +1029,26 @@ function UI.drawPlayfield(gameSeconds)
 		cloud(x, c.y, c.s, 0.15)
 	end
 
+	-- The rare bunny cloud drifts across once during a lucky minute of the run
+	local minute = (gameSeconds or 0) // 60
+	if rareRoll(minute) < UI.BUNNY_CLOUD_CHANCE then
+		local p = ((gameSeconds or 0) % 60) / 60
+		bunnyCloud(math.floor(-40 + p * (W + 80)), 48)
+	end
+
 	if cycle < SUN_SECONDS then
 		local bx = (t * BALLOON_SPEED) % (W + 60) - 30
 		balloon(math.floor(bx), math.floor(BALLOON_Y + math.sin(t / 1500) * 3))
+		local sx = W + 20 - (t * SMALL_BALLOON_SPEED) % (W + 40)
+		smallBalloon(math.floor(sx), math.floor(SMALL_BALLOON_Y + math.sin(t / 1800 + 1) * 2))
+		local px = (t * BLIMP_SPEED + 230) % (W + 80) - 40
+		blimp(math.floor(px), math.floor(BLIMP_Y + math.sin(t / 2200) * 2))
+	else
+		local ut = t % UFO_EVERY
+		if ut < UFO_CROSSING_MS then
+			local p = ut / UFO_CROSSING_MS
+			ufo(math.floor(W + 20 - p * (W + 40)), math.floor(50 + math.sin(t / 250) * 3))
+		end
 	end
 
 	for _, b in ipairs(fieldBirds) do

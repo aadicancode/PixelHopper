@@ -731,6 +731,20 @@ local function drawHUD(s)
 		local label = "+" .. carrotPopAmount
 		textRight(fonts.label, label, px - 6, math.floor(10 - rise))
 	end
+
+	-- Active power-up: its icon and a countdown bar under the timer (flashes in the last 2s)
+	local p = s.power
+	if p and p.remainingMs > 0 then
+		local lastSeconds = p.remainingMs < 2000
+		if not lastSeconds or (now() // 150) % 2 == 0 then
+			hudPill(4, 28, 74, false)
+			p.image:draw(6, 28)
+			local barX, barY, barW, barH = 30, 35, 40, 6
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawRect(barX, barY, barW, barH)
+			gfx.fillRect(barX + 1, barY + 1, math.floor((barW - 2) * p.remainingMs / p.durationMs), barH - 2)
+		end
+	end
 end
 
 -------------------------------------------------------

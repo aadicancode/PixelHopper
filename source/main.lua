@@ -1485,6 +1485,126 @@ local uiImages = {
 local deathStartMs = 0
 local deathVelocity = 0
 
+-------------------------------------------------------
+-- === Power-ups (rare) ===
+-- A power-up bubble shows up now and then: at most one every 30-45s, and never while one is
+-- active. It pops if it isn't collected within POWERUP_LIFETIME_MS (flashing near the end).
+--   shield:      blocks one hit, then a short blink of invincibility; wears off after SHIELD_MS
+--   double jump: one extra jump in mid-air, for DOUBLE_JUMP_MS
+-------------------------------------------------------
+local POWERUP_GAP_MIN_MS, POWERUP_GAP_MAX_MS = 30000, 45000
+local POWERUP_LIFETIME_MS = 8000
+local POWERUP_FLASH_MS = 2000
+local SHIELD_MS = 15000
+local DOUBLE_JUMP_MS = 10000
+local HIT_INVINCIBLE_MS = 1200
+local POWERUP_KINDS = { "shield", "doubleJump" }
+local POWERUP_DURATION = { shield = SHIELD_MS, doubleJump = DOUBLE_JUMP_MS }
+
+-- Bubble icons: white disc with a thick outline and a little glint, icon inside
+local function makePowerUpImage(kind)
+	local img = gfx.image.new(20, 20)
+	gfx.pushContext(img)
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillCircleAtPoint(10, 10, 9)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.setLineWidth(2)
+		gfx.drawCircleAtPoint(10, 10, 8)
+		gfx.setLineWidth(1)
+		gfx.drawLine(5, 7, 6, 5) -- glint
+		if kind == "shield" then
+			gfx.fillPolygon(10, 4, 15, 6, 14, 11, 10, 16, 6, 11, 5, 6)
+			gfx.setColor(gfx.kColorWhite)
+			gfx.drawLine(10, 6, 10, 13)
+		else
+			-- two stacked up-arrows
+			gfx.setLineWidth(2)
+			gfx.drawLine(6, 10, 10, 6)
+			gfx.drawLine(10, 6, 14, 10)
+			gfx.drawLine(6, 15, 10, 11)
+			gfx.drawLine(10, 11, 14, 15)
+			gfx.setLineWidth(1)
+		end
+	gfx.popContext()
+	return img
+end
+local powerUpImages = { shield = makePowerUpImage("shield"), doubleJump = makePowerUpImage("doubleJump") }
+
+local powerUp = nil -- the bubble on the field: { sprite, kind, spawnMs, x, baseY }
+local activePower = nil -- { kind, untilMs }
+local nextPowerUpMs = 0
+local invincibleUntilMs = 0
+local usedDoubleJump = false
+
+local function powerUpGap()
+	return math.random(POWERUP_GAP_MIN_MS, POWERUP_GAP_MAX_MS)
+end
+
+local function removePowerUpBubble()
+	if powerUp then
+		powerUp.sprite:remove()
+		powerUp = nil
+	end
+end
+
+local function resetPowerUps()
+	removePowerUpBubble()
+	activePower = nil
+	invincibleUntilMs = 0
+	usedDoubleJump = false
+	nextPowerUpMs = nowMs() + powerUpGap()
+end
+
+local function spawnPowerUp()
+	local kind = POWERUP_KINDS[math.random(1, #POWERUP_KINDS)]
+	-- Somewhere clear of platforms, and below the HUD so it's never hidden behind it
+	local x, y = findValidSpawnPosition()
+	for _ = 1, 20 do
+		if y >= 50 then break end
+		x, y = findValidSpawnPosition()
+	end
+	y = math.max(y, 50)
+	local sprite = gfx.sprite.new(powerUpImages[kind])
+	sprite:setCenter(0.5, 0.5)
+	sprite:moveTo(x, y)
+	sprite:add()
+	powerUp = { sprite = sprite, kind = kind, spawnMs = nowMs(), x = x, baseY = y }
+end
+
+local function hasPower(kind)
+	return activePower ~= nil and activePower.kind == kind and nowMs() < activePower.untilMs
+end
+
+-- Spawning, bobbing, expiring and collecting. Called every frame while playing.
+local function updatePowerUps()
+	local now = nowMs()
+	if activePower and now >= activePower.untilMs then activePower = nil end
+	if not powerUp and not activePower and now >= nextPowerUpMs then spawnPowerUp() end
+	if not powerUp then return end
+
+	local age = now - powerUp.spawnMs
+	if age >= POWERUP_LIFETIME_MS then
+		-- Not collected in time: pop
+		spawnParticles(powerUp.x, powerUp.baseY)
+		removePowerUpBubble()
+		nextPowerUpMs = now + powerUpGap()
+		return
+	end
+
+	powerUp.sprite:moveTo(powerUp.x, powerUp.baseY + math.sin(now / 300) * 3)
+	powerUp.sprite:setVisible(age < POWERUP_LIFETIME_MS - POWERUP_FLASH_MS or (now // 150) % 2 == 0)
+
+	local bx, by, bw, bh = bunny:getBounds()
+	local px, py, pw, ph = powerUp.sprite:getBounds()
+	if playdate.geometry.rect.new(bx, by, bw, bh):intersects(playdate.geometry.rect.new(px, py, pw, ph)) then
+		activePower = { kind = powerUp.kind, untilMs = now + POWERUP_DURATION[powerUp.kind] }
+		usedDoubleJump = false
+		spawnParticles(powerUp.x, powerUp.baseY)
+		removePowerUpBubble()
+		nextPowerUpMs = now + powerUpGap() -- (another can't appear until this one wears off anyway)
+	end
+end
+
 -- reset everything for restart
 local function restartGame()
 	UI.newRun() -- new roll for the rare bunny cloud
@@ -1580,6 +1700,7 @@ local function restartGame()
 	whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
 	-- Reset achievement tracking
 	carrotCollectionTimes = {}
+	resetPowerUps()
 end
 
 local function die()
@@ -1616,6 +1737,22 @@ local function die()
 
 	gameState = "dying"
 	menuSelection = 1
+end
+
+-- A hazard touched the bunny. A shield absorbs the hit (followed by a short blink of
+-- invincibility so you can get clear); otherwise it's game over.
+local function hitBunny()
+	if gameState ~= "playing" then return end
+	local now = nowMs()
+	if now < invincibleUntilMs then return end
+	if hasPower("shield") then
+		activePower = nil
+		invincibleUntilMs = now + HIT_INVINCIBLE_MS
+		local bx, by, bw, bh = bunny:getBounds()
+		spawnParticles(bx + bw / 2, by + bh / 2)
+		return
+	end
+	die()
 end
 
 local function updateDying()
@@ -1792,12 +1929,24 @@ function playdate.update()
 		elseif bx > RIGHT_BOUND then bunny:moveTo(RIGHT_BOUND, by) end
 
 		-- Jump with acceleration
-		if (playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonUp)) and (isOnGround or coyoteFrames > 0) then
+		local jumpPressed = playdate.buttonJustPressed(playdate.kButtonA) or playdate.buttonJustPressed(playdate.kButtonUp)
+		if jumpPressed and (isOnGround or coyoteFrames > 0) then
 			yVelocity = JUMP_VELOCITY -- initial jump velocity
 			isOnGround = false
 			coyoteFrames = 0 -- grace is used up once you jump
 			jumpPressedTime = 0
 			setHopSprite()
+			if jumpSound then
+				jumpSound:play()
+			end
+		elseif jumpPressed and hasPower("doubleJump") and not usedDoubleJump then
+			-- Double jump power-up: one extra jump in mid-air
+			usedDoubleJump = true
+			yVelocity = JUMP_VELOCITY
+			jumpPressedTime = 0
+			setHopSprite()
+			local fx, fy = bunny:getPosition()
+			spawnParticles(fx, fy)
 			if jumpSound then
 				jumpSound:play()
 			end
@@ -1902,6 +2051,7 @@ function playdate.update()
 		-- Coyote time: keep a few frames of jump grace after walking off a ledge
 		if isOnGround then
 			coyoteFrames = COYOTE_FRAMES
+			usedDoubleJump = false
 		elseif coyoteFrames > 0 then
 			coyoteFrames -= 1
 		end
@@ -2027,6 +2177,8 @@ function playdate.update()
 			end
 		end
 
+		updatePowerUps()
+
 		---------------------------------------------------------------------
 
 		-- spawn arrows over time
@@ -2078,7 +2230,7 @@ function playdate.update()
 					local arrowRect = arrowHitRect(a)
 					if getBunnyHitRect():intersects(arrowRect) then
 						-- Leave the arrow in place so it is visible while the bunny falls
-						die()
+						hitBunny()
 						break
 					end
 				end
@@ -2183,7 +2335,7 @@ function playdate.update()
 			if saw and saw.sprite and not saw.isFlashing then
 				local sawRect = centeredRect(saw.sprite, SAW_HITBOX)
 				if bunnyRect:intersects(sawRect) then
-					die()
+					hitBunny()
 					break
 				end
 			end
@@ -2195,7 +2347,7 @@ function playdate.update()
 			if ball and ball.sprite and not ball.isFlashing then
 				local ballRect = centeredRect(ball.sprite, WRECKING_BALL_HITBOX)
 				if bunnyRect:intersects(ballRect) then
-					die()
+					hitBunny()
 					break
 				end
 			end
@@ -2207,7 +2359,7 @@ function playdate.update()
 			if spikeBall and spikeBall.sprite and not spikeBall.isFlashing then
 				local spikeRect = centeredRect(spikeBall.sprite, SPIKE_BALL_HITBOX)
 				if bunnyRect:intersects(spikeRect) then
-					die()
+					hitBunny()
 					break
 				end
 			end
@@ -2247,7 +2399,7 @@ function playdate.update()
 					local projRect = projectileHitRect(projectile)
 					if bunnyRect:intersects(projRect) then
 						-- Leave the projectile in place so it is visible while the bunny falls
-						die()
+						hitBunny()
 						break
 					end
 				end
@@ -2265,10 +2417,25 @@ function playdate.update()
 	-- Control bunny visibility based on game state
 	local inGame = gameState == "playing" or gameState == "dying"
 	bunny:setVisible(inGame)
+	if gameState == "playing" and nowMs() < invincibleUntilMs then
+		bunny:setVisible((nowMs() // 80) % 2 == 0) -- blink after the shield takes a hit
+	end
 
 	-- Update sprites & timers
 	gfx.sprite.update()
 	playdate.timer.updateTimers()
+
+	-- Shield power-up: a ring of dots circling the bunny
+	if gameState == "playing" and hasPower("shield") then
+		local bx, by, bw, bh = bunny:getBounds()
+		local cx, cy = bx + bw / 2, by + bh / 2
+		local spin = nowMs() / 400
+		gfx.setColor(gfx.kColorBlack)
+		for i = 0, 9 do
+			local a = spin + i / 10 * math.pi * 2
+			gfx.fillCircleAtPoint(cx + math.cos(a) * 17, cy + math.sin(a) * 17, 1.5)
+		end
+	end
 
 	-- Draw obstacle chains and outlines (during gameplay and the death sequence)
 	if inGame then
@@ -2337,6 +2504,11 @@ function playdate.update()
 		online = OnlineLeaderboard,
 		achievementDefinitions = achievementDefinitions,
 		achievements = achievements,
+		power = (activePower and gameState == "playing") and {
+			image = powerUpImages[activePower.kind],
+			remainingMs = activePower.untilMs - nowMs(),
+			durationMs = POWERUP_DURATION[activePower.kind],
+		} or nil,
 		notification = activeNotification,
 		notificationAge = activeNotification and (nowMs() - activeNotification.startTime) or 0,
 		formatTime = formatTime,

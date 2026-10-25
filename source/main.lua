@@ -398,6 +398,15 @@ bunny:setCollideRect(math.max(0, (bw - 20) / 2), bh - 22, 20, 22) -- centered on
 local yVelocity = 0
 local xVelocity = 0
 local isOnGround = true
+-- Drop-through: press Down on a platform to fall through it. The platform you're standing on is
+-- remembered, and the one you dropped through is ignored for DROP_THROUGH_MS so you don't re-land.
+local DROP_THROUGH_MS = 250
+local standingPlatform = nil
+local dropPlatform = nil
+local dropUntilMs = 0
+local function ignoringPlatform(plat)
+	return plat == dropPlatform and nowMs() < dropUntilMs
+end
 local facing = "right"
 local jumpPressedTime = 0
 local coyoteFrames = 0
@@ -1501,30 +1510,68 @@ local HIT_INVINCIBLE_MS = 1200
 local POWERUP_KINDS = { "shield", "doubleJump" }
 local POWERUP_DURATION = { shield = SHIELD_MS, doubleJump = DOUBLE_JUMP_MS }
 
--- Bubble icons: white disc with a thick outline and a little glint, icon inside
+-- Bubble icons (24x24): a clean white bubble with a bold outline and a small shine,
+-- with a hand-drawn pixel-art icon inside ('#' = black, '.' = white, ' ' = leave as is)
+local POWERUP_SIZE = 24
+local POWERUP_ICONS = {
+	shield = {
+		"##########",
+		"#........#",
+		"#.######.#",
+		"#.##..##.#",
+		"#.#....#.#",
+		"#.##..##.#",
+		"#.######.#",
+		".#.####.#.",
+		".#.####.#.",
+		"..#.##.#..",
+		"...#..#...",
+		"....##....",
+	},
+	doubleJump = { -- two stacked up-chevrons: "jump up twice"
+		".....##.....",
+		"....####....",
+		"...######...",
+		"..###..###..",
+		".###....###.",
+		"###......###",
+		".....##.....",
+		"....####....",
+		"...######...",
+		"..###..###..",
+		".###....###.",
+		"###......###",
+	},
+}
+
+local function drawPixelMap(map, x, y)
+	for row, line in ipairs(map) do
+		for col = 1, #line do
+			local ch = string.sub(line, col, col)
+			if ch == "#" then
+				gfx.setColor(gfx.kColorBlack)
+				gfx.drawPixel(x + col - 1, y + row - 1)
+			elseif ch == "." then
+				gfx.setColor(gfx.kColorWhite)
+				gfx.drawPixel(x + col - 1, y + row - 1)
+			end
+		end
+	end
+end
+
 local function makePowerUpImage(kind)
-	local img = gfx.image.new(20, 20)
+	local c = POWERUP_SIZE / 2
+	local img = gfx.image.new(POWERUP_SIZE, POWERUP_SIZE, gfx.kColorClear)
 	gfx.pushContext(img)
 		gfx.setColor(gfx.kColorWhite)
-		gfx.fillCircleAtPoint(10, 10, 9)
+		gfx.fillCircleAtPoint(c, c, 11)
 		gfx.setColor(gfx.kColorBlack)
 		gfx.setLineWidth(2)
-		gfx.drawCircleAtPoint(10, 10, 8)
+		gfx.drawCircleAtPoint(c, c, 10)
 		gfx.setLineWidth(1)
-		gfx.drawLine(5, 7, 6, 5) -- glint
-		if kind == "shield" then
-			gfx.fillPolygon(10, 4, 15, 6, 14, 11, 10, 16, 6, 11, 5, 6)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.drawLine(10, 6, 10, 13)
-		else
-			-- two stacked up-arrows
-			gfx.setLineWidth(2)
-			gfx.drawLine(6, 10, 10, 6)
-			gfx.drawLine(10, 6, 14, 10)
-			gfx.drawLine(6, 15, 10, 11)
-			gfx.drawLine(10, 11, 14, 15)
-			gfx.setLineWidth(1)
-		end
+		gfx.drawArc(c, c, 7, 295, 340) -- shine
+		local icon = POWERUP_ICONS[kind]
+		drawPixelMap(icon, math.floor(c - #icon[1] / 2), math.floor(c - #icon / 2) + ((#icon < 12) and 1 or 0))
 	gfx.popContext()
 	return img
 end
@@ -1701,6 +1748,8 @@ local function restartGame()
 	-- Reset achievement tracking
 	carrotCollectionTimes = {}
 	resetPowerUps()
+	standingPlatform = nil
+	dropPlatform = nil
 end
 
 local function die()
@@ -1952,6 +2001,17 @@ function playdate.update()
 			end
 		end
 
+		-- Down while standing on a platform (not the ground): drop through it
+		if playdate.buttonJustPressed(playdate.kButtonDown) and isOnGround and standingPlatform then
+			dropPlatform = standingPlatform
+			dropUntilMs = nowMs() + DROP_THROUGH_MS
+			standingPlatform = nil
+			isOnGround = false
+			coyoteFrames = 0 -- no jumping back up off the platform you just left
+			yVelocity = 1
+			setFallSprite()
+		end
+
 		-- Hold jump for additional lift
 		if (playdate.buttonIsPressed(playdate.kButtonA) or playdate.buttonIsPressed(playdate.kButtonUp)) and not isOnGround and yVelocity < 0 then
 			jumpPressedTime += 1
@@ -1981,7 +2041,7 @@ function playdate.update()
 					local px, py = plat:getPosition()
 					local pw, ph = plat:getSize()
 					local pLeft, pRight, pTop = px - pw/2, px + pw/2, py - ph/2
-					if bx > pLeft and bx < pRight then
+					if bx > pLeft and bx < pRight and not ignoringPlatform(plat) then
 						local hitRect = bunny:getCollideRect()
 						local hitH = hitRect.height or 22
 						local bunnyBottom = by - (hitH / 2) + 10
@@ -1989,6 +2049,7 @@ function playdate.update()
 						if distanceAbove >= -LEDGE_ASSIST_PX and distanceAbove <= 2 and yVelocity >= 0 then
 							yVelocity = 0
 							isOnGround = true
+							standingPlatform = plat
 							local offset = (hitH / 2) - 10
 							bunny:moveTo(bx, pTop + offset)
 							-- Don't set standing sprite here if moving - let walking animation handle it
@@ -2007,6 +2068,7 @@ function playdate.update()
 
 		-- Ground/platform snap & collisions
 		isOnGround = false
+		standingPlatform = nil
 		bx, by = bunny:getPosition()
 		local bunnyBottom = by
 		local hitRect = bunny:getCollideRect()
@@ -2025,11 +2087,12 @@ function playdate.update()
 			local pw, ph = plat:getSize()
 			if px and py and pw and ph then
 				local pLeft, pRight, pTop = px - pw/2, px + pw/2, py - ph/2
-				if bx > pLeft and bx < pRight then
+				if bx > pLeft and bx < pRight and not ignoringPlatform(plat) then
 					local distanceAbove = pTop - bunnyBottomHalf
 					if distanceAbove >= -LEDGE_ASSIST_PX and distanceAbove <= 6 and yVelocity >= 0 then
 						newGroundTop = pTop
 						isOnGround = true
+						standingPlatform = plat
 						yVelocity = 0
 						break
 					end

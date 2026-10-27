@@ -726,10 +726,19 @@ local function drawHUD(s)
 	end
 	text(fonts.label, countText, px + 26, 9, popping)
 
+	-- "+1" / "+3" pops up just below the carrot counter and floats up toward it
 	if popAge < 700 then
-		local rise = easeOutCubic(popAge / 700) * 14
-		local label = "+" .. carrotPopAmount
-		textRight(fonts.label, label, px - 6, math.floor(10 - rise))
+		local rise = easeOutCubic(popAge / 700) * 6
+		local number = tostring(carrotPopAmount)
+		-- The pixel font has no "+", so the plus sign is drawn by hand
+		local plusW, gap = 6, 2
+		local totalW = plusW + gap + textWidth(fonts.label, number)
+		local x = math.floor(px + pillW / 2 - totalW / 2)
+		local y = math.floor(32 - rise)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.fillRect(x, y + 4, 6, 2)
+		gfx.fillRect(x + 2, y + 2, 2, 6)
+		text(fonts.label, number, x + plusW + gap, y)
 	end
 
 	-- Active power-up: its icon and a countdown bar under the timer (flashes in the last 2s)

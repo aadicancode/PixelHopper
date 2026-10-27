@@ -333,10 +333,10 @@ local function drawMainMenu(s)
 	gfx.setColor(gfx.kColorBlack)
 	gfx.setLineWidth(1)
 	gfx.drawRoundRect(chipX, 46, chipW, 20, 10)
-	text(fonts.bold, name, chipX + 10, 48)
+	text(fonts.bold, name, chipX + 10, 47) -- name letters sit 2px into the font box: 2px above, 1px below in the 20px chip
 	local dotX = chipX + 10 + textWidth(fonts.bold, name) + 7
 	gfx.fillCircleAtPoint(dotX, 56, 2)
-	text(fonts.label, best, dotX + 7, 50)
+	text(fonts.label, best, dotX + 7, 51)
 
 	verticalMenu(s.mainMenuOptions, s.menuSelection, W / 2, 74, 24, s.images)
 	hoppingBunny(s.images)

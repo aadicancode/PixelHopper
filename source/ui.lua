@@ -224,19 +224,67 @@ local function cloud(x, y, s, alpha)
 	gfx.fillRoundRect(x, y - 2 * s, 26 * s, 11 * s, 5 * s)
 end
 
+-- Menu ground, drawn once: an uneven grass edge with a few flowers, then soil with scattered
+-- pebbles above and below a clear band where the button hints sit
+local GRASS_H <const> = 14 -- room above the ground line for grass and flower heads
+local menuGroundImage = nil
+
+local function buildMenuGround()
+	local img = gfx.image.new(W, H - GROUND_Y + GRASS_H, gfx.kColorClear)
+	local top = GRASS_H -- the ground line inside the image
+	gfx.pushContext(img)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.fillRect(0, top, W, H - GROUND_Y)
+
+		-- Grass: small tufts of two or three blades, spaced out along the edge
+		for x = 2, W - 1, 9 do
+			local h = 2 + (x * 7) % 3
+			gfx.drawLine(x, top, x - 1, top - h)
+			gfx.drawLine(x + 2, top, x + 2, top - h - 1)
+			if (x // 9) % 2 == 0 then gfx.drawLine(x + 4, top, x + 5, top - h) end
+		end
+
+		-- A few small flowers along the edge (kept clear of where the carrots grow)
+		for _, fx in ipairs({ 32, 142, 264, 372 }) do
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawLine(fx, top, fx, top - 6)
+			gfx.drawLine(fx, top - 2, fx + 2, top - 4) -- leaf
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillCircleAtPoint(fx, top - 9, 3)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.drawCircleAtPoint(fx, top - 9, 3)
+			gfx.fillRect(fx - 1, top - 10, 2, 2) -- center
+		end
+
+		-- Pebbles in the soil: evenly spaced (with a little jitter) in a band near the top and along
+		-- the bottom edge, leaving the middle clear for the white hint text
+		local function pebble(x, y, big)
+			gfx.setColor(gfx.kColorWhite)
+			if big then
+				gfx.fillRect(x, y, 4, 2)
+				gfx.fillRect(x + 1, y - 1, 2, 1)
+			else
+				gfx.fillRect(x, y, 2, 1)
+			end
+		end
+		for i = 0, 17 do
+			pebble(8 + i * 22 + (i * 7) % 9, top + 6 + (i * 5) % 6, i % 3 == 0)
+		end
+		for i = 0, 13 do
+			pebble(16 + i * 28 + (i * 11) % 10, top + 38 + (i * 3) % 4, i % 3 == 1)
+		end
+	gfx.popContext()
+	return img
+end
+
 local function backdrop()
 	local t = now()
 	for _, c in ipairs(clouds) do
 		local x = (c.x + t * c.speed) % (W + 80) - 40
 		cloud(x, c.y, c.s)
 	end
-	gfx.setColor(gfx.kColorBlack)
-	gfx.fillRect(0, GROUND_Y, W, H - GROUND_Y)
-	-- grass tufts along the top edge
-	for x = 4, W, 22 do
-		gfx.fillTriangle(x, GROUND_Y, x + 3, GROUND_Y - 4, x + 6, GROUND_Y)
-		gfx.fillTriangle(x + 7, GROUND_Y, x + 9, GROUND_Y - 3, x + 11, GROUND_Y)
-	end
+	menuGroundImage = menuGroundImage or buildMenuGround()
+	menuGroundImage:draw(0, GROUND_Y - GRASS_H)
 end
 
 -- Main menu bunny. It hops along the ground strip one hop at a time (crouch, take off, land with a
@@ -332,6 +380,25 @@ local function drawPlantedCarrot(img, x, visibleRows)
 	img:draw(x - 8, GROUND_Y - rows, gfx.kImageUnflipped, 0, 0, 16, rows)
 end
 
+-- A carrot being eaten: bites are taken from the tip (bottom left) up toward the leafy top,
+-- leaving a scalloped edge, and the leaves go last. Drawn via its own image so the bites don't
+-- erase the bunny behind it.
+local bittenCarrotImage = nil
+local function drawBittenCarrot(img, x, p)
+	if p >= 0.9 then return end
+	bittenCarrotImage = bittenCarrotImage or gfx.image.new(16, 16, gfx.kColorClear)
+	gfx.pushContext(bittenCarrotImage)
+		gfx.clear(gfx.kColorClear)
+		img:draw(0, 0)
+		gfx.setColor(gfx.kColorClear)
+		local eaten = math.min(1, p / 0.75) * 8 -- how far up the carrot, along its diagonal
+		for d = 0, eaten, 1 do
+			gfx.fillCircleAtPoint(d, 15 - d, 3)
+		end
+	gfx.popContext()
+	bittenCarrotImage:draw(x - 8, GROUND_Y - 16)
+end
+
 local function hoppingBunny(images)
 	local t = now()
 	updateMenuBunny(t)
@@ -375,10 +442,10 @@ local function hoppingBunny(images)
 		end
 	end
 
-	-- Eating: the carrot in front shrinks into the ground, with crumbs flying off
+	-- Eating: bites come off the carrot in front, with crumbs flying off
 	if b.state == "eat" and b.carrot and images.carrot then
 		local p = age / EAT_MS
-		drawPlantedCarrot(images.carrot, b.carrot.x, 16 * (1 - p))
+		drawBittenCarrot(images.carrot, b.carrot.x, p)
 		gfx.setColor(gfx.kColorBlack)
 		for i = 0, 2 do
 			local ct = ((age + i * 170) % 500) / 500

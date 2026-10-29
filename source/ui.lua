@@ -239,19 +239,154 @@ local function backdrop()
 	end
 end
 
--- Bunny hopping across the ground strip, with a few carrots planted along the way
+-- Main menu bunny. It hops along the ground strip one hop at a time (crouch, take off, land with a
+-- puff of dust), now and then stops to look around, eats the carrots planted along the way (they
+-- grow back), and turns around at the screen edges. It only uses the game's three bunny frames.
+local HOP_DISTANCE <const> = 26
+local HOP_HEIGHT <const> = 9
+local HOP_AIR_MS <const> = 380
+local CROUCH_MS <const> = 110
+local LAND_MS <const> = 140
+local EAT_MS <const> = 1200
+local CARROT_REGROW_MS <const> = 9000
+
+local menuCarrots = { { x = 70 }, { x = 205 }, { x = 330 } }
+local menuBunny = { x = 30, dir = 1, state = "idle", since = 0, wait = 800, fromX = 30, toX = 30 }
+
+local function setBunnyState(b, state, t, wait)
+	b.state, b.since, b.wait = state, t, wait or 0
+end
+
+local function uneatenCarrotNear(x)
+	for _, c in ipairs(menuCarrots) do
+		if not c.eatenAt and math.abs(c.x - x) < 13 then return c end
+	end
+	return nil
+end
+
+local function updateMenuBunny(t)
+	local b = menuBunny
+	local age = t - b.since
+
+	if b.state == "idle" then
+		if age >= b.wait then
+			local nextX = b.x + b.dir * HOP_DISTANCE
+			if nextX < 16 or nextX > W - 16 then
+				b.dir = -b.dir -- turn around at the edge
+				setBunnyState(b, "idle", t, 450)
+			else
+				setBunnyState(b, "crouch", t)
+			end
+		end
+	elseif b.state == "look" then
+		-- glance back over its shoulder for a moment, then carry on
+		if age >= b.wait then setBunnyState(b, "idle", t, 250) end
+	elseif b.state == "crouch" then
+		if age >= CROUCH_MS then
+			b.fromX, b.toX = b.x, b.x + b.dir * HOP_DISTANCE
+			setBunnyState(b, "air", t)
+		end
+	elseif b.state == "air" then
+		local p = age / HOP_AIR_MS
+		if p >= 1 then
+			b.x = b.toX
+			setBunnyState(b, "land", t)
+		else
+			b.x = b.fromX + (b.toX - b.fromX) * p
+		end
+	elseif b.state == "land" then
+		if age >= LAND_MS then
+			local carrot = uneatenCarrotNear(b.x)
+			if carrot then
+				b.carrot = carrot
+				b.travelDir = b.dir
+				b.dir = (carrot.x >= b.x) and 1 or -1 -- face the carrot
+				setBunnyState(b, "eat", t)
+			elseif math.random() < 0.2 then
+				setBunnyState(b, "look", t, math.random(600, 1000))
+			else
+				setBunnyState(b, "idle", t, math.random(40, 140))
+			end
+		end
+	elseif b.state == "eat" then
+		if age >= EAT_MS then
+			b.carrot.eatenAt = t
+			b.carrot = nil
+			b.dir = b.travelDir or b.dir -- carry on the way it was going
+			setBunnyState(b, "idle", t, 500)
+		end
+	end
+
+	for _, c in ipairs(menuCarrots) do
+		if c.eatenAt and t - c.eatenAt > CARROT_REGROW_MS then
+			c.eatenAt = nil
+			c.grownAt = t
+		end
+	end
+end
+
+local function drawPlantedCarrot(img, x, visibleRows)
+	-- Draw only the top `visibleRows` of the carrot, sitting in the ground (to grow or be eaten)
+	local rows = math.max(0, math.min(16, math.floor(visibleRows)))
+	if rows <= 0 then return end
+	img:draw(x - 8, GROUND_Y - rows, gfx.kImageUnflipped, 0, 0, 16, rows)
+end
+
 local function hoppingBunny(images)
 	local t = now()
-	for _, cx in ipairs({ 70, 205, 330 }) do
-		if images.carrot then images.carrot:draw(cx - 8, GROUND_Y - 16) end
+	updateMenuBunny(t)
+	local b = menuBunny
+	local age = t - b.since
+
+	-- Planted carrots (regrown ones poke up out of the ground)
+	if images.carrot then
+		for _, c in ipairs(menuCarrots) do
+			if not c.eatenAt and c ~= b.carrot then
+				local grow = c.grownAt and math.min(1, (t - c.grownAt) / 400) or 1
+				drawPlantedCarrot(images.carrot, c.x, 16 * grow)
+			end
+		end
 	end
-	local span = W + 60
-	local x = (t * 0.06) % span - 30
-	local phase = (t % 520) / 520
-	local hop = math.sin(phase * math.pi) * 8
-	local img = (phase < 0.5) and images.bunnyHop or images.bunnyFall
-	if hop < 2 then img = images.bunny end
-	if img then img:draw(math.floor(x - 10), math.floor(GROUND_Y - 24 - hop)) end
+
+	-- Pick the frame and offset for the current moment of the hop
+	local img, lift, dip = images.bunny, 0, 0
+	local flip = (b.dir < 0) and gfx.kImageFlippedX or gfx.kImageUnflipped
+	if b.state == "crouch" then
+		dip = 2
+	elseif b.state == "air" then
+		local p = age / HOP_AIR_MS
+		lift = math.sin(p * math.pi) * HOP_HEIGHT
+		img = (p < 0.5) and images.bunnyHop or images.bunnyFall
+	elseif b.state == "land" then
+		dip = (age < LAND_MS / 2) and 2 or 1
+	elseif b.state == "look" then
+		flip = (b.dir < 0) and gfx.kImageUnflipped or gfx.kImageFlippedX
+	elseif b.state == "eat" then
+		dip = ((age // 150) % 2 == 0) and 1 or 0 -- nibbling
+	end
+	if img then img:draw(math.floor(b.x - 10), math.floor(GROUND_Y - 24 - lift + dip), flip) end
+
+	-- Puff of dust on landing
+	if b.state == "land" then
+		local p = age / LAND_MS
+		dither(0.5)
+		for _, side in ipairs({ -1, 1 }) do
+			gfx.fillCircleAtPoint(b.x + side * (7 + p * 7), GROUND_Y - 2 - p * 2, 2.5 - p * 1.5)
+		end
+	end
+
+	-- Eating: the carrot in front shrinks into the ground, with crumbs flying off
+	if b.state == "eat" and b.carrot and images.carrot then
+		local p = age / EAT_MS
+		drawPlantedCarrot(images.carrot, b.carrot.x, 16 * (1 - p))
+		gfx.setColor(gfx.kColorBlack)
+		for i = 0, 2 do
+			local ct = ((age + i * 170) % 500) / 500
+			local cx = b.carrot.x + (i - 1) * 4 + ct * 6 * ((i % 2 == 0) and 1 or -1)
+			local cy = GROUND_Y - 14 - math.sin(ct * math.pi) * 6
+			if ct < 0.85 then gfx.fillRect(math.floor(cx), math.floor(cy), 2, 2) end
+		end
+	end
 end
 
 -------------------------------------------------------

@@ -332,17 +332,11 @@ local groundImage = gfx.image.new(GROUND_WIDTH, GROUND_HEIGHT)
 gfx.pushContext(groundImage)
 	gfx.setColor(gfx.kColorBlack)
 	gfx.fillRect(0, 0, GROUND_WIDTH, GROUND_HEIGHT)
-	-- Pebbles in the dirt (fixed pattern so it doesn't change between runs)
-	gfx.setColor(gfx.kColorWhite)
-	for i = 0, 38 do
-		local px = (i * 53 + (i % 4) * 17) % GROUND_WIDTH
-		local py = 6 + (i * 7) % (GROUND_HEIGHT - 9)
-		if i % 3 == 0 then
-			gfx.fillRect(px, py, 3, 2)
-		else
-			gfx.fillRect(px, py, 2, 1)
-		end
-	end
+	-- Pebbles in the dirt, in the same style as the menu ground
+	UI.drawGroundPebbles({
+		{ y = 6, x0 = 8, spacing = 22, count = 18, bigOffset = 0 },
+		{ y = 16, x0 = 19, spacing = 28, count = 14, bigOffset = 1 },
+	})
 gfx.popContext()
 local ground = gfx.sprite.new(groundImage)
 ground:setCollideRect(0, 0, GROUND_WIDTH, GROUND_HEIGHT)

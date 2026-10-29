@@ -224,8 +224,51 @@ local function cloud(x, y, s, alpha)
 	gfx.fillRoundRect(x, y - 2 * s, 26 * s, 11 * s, 5 * s)
 end
 
--- Menu ground, drawn once: an uneven grass edge with a few flowers, then soil with scattered
--- pebbles above and below a clear band where the button hints sit
+-- Shared ground details: the main menu, the game-over screen and the playing field all use the
+-- same grass edge, flowers and pebbles.
+
+-- Grass tufts of two or three blades along the ground line at y = top, plus small flowers
+local function drawGrassEdge(top, flowerXs)
+	gfx.setColor(gfx.kColorBlack)
+	for x = 2, W - 1, 9 do
+		local h = 2 + (x * 7) % 3
+		gfx.drawLine(x, top, x - 1, top - h)
+		gfx.drawLine(x + 2, top, x + 2, top - h - 1)
+		if (x // 9) % 2 == 0 then gfx.drawLine(x + 4, top, x + 5, top - h) end
+	end
+	for _, fx in ipairs(flowerXs) do
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawLine(fx, top, fx, top - 6)
+		gfx.drawLine(fx, top - 2, fx + 2, top - 4) -- leaf
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillCircleAtPoint(fx, top - 9, 3)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawCircleAtPoint(fx, top - 9, 3)
+		gfx.fillRect(fx - 1, top - 10, 2, 2) -- center
+	end
+end
+
+-- Rows of evenly spaced (lightly jittered) white pebbles in black soil.
+-- Each row: { y, x0, spacing, count, bigOffset } where every third pebble (offset by bigOffset) is big.
+function UI.drawGroundPebbles(rows)
+	gfx.setColor(gfx.kColorWhite)
+	for _, r in ipairs(rows) do
+		for i = 0, r.count - 1 do
+			local x = r.x0 + i * r.spacing + (i * 7) % 9
+			local y = r.y + (i * 5) % 5
+			if i % 3 == (r.bigOffset or 0) then
+				gfx.fillRect(x, y, 4, 2)
+				gfx.fillRect(x + 1, y - 1, 2, 1)
+			else
+				gfx.fillRect(x, y, 2, 1)
+			end
+		end
+	end
+	gfx.setColor(gfx.kColorBlack)
+end
+
+-- Menu ground, drawn once: the grass edge with a few flowers, then soil with pebbles above and
+-- below a clear band where the button hints sit
 local GRASS_H <const> = 14 -- room above the ground line for grass and flower heads
 local menuGroundImage = nil
 
@@ -236,43 +279,11 @@ local function buildMenuGround()
 		gfx.setColor(gfx.kColorBlack)
 		gfx.fillRect(0, top, W, H - GROUND_Y)
 
-		-- Grass: small tufts of two or three blades, spaced out along the edge
-		for x = 2, W - 1, 9 do
-			local h = 2 + (x * 7) % 3
-			gfx.drawLine(x, top, x - 1, top - h)
-			gfx.drawLine(x + 2, top, x + 2, top - h - 1)
-			if (x // 9) % 2 == 0 then gfx.drawLine(x + 4, top, x + 5, top - h) end
-		end
-
-		-- A few small flowers along the edge (kept clear of where the carrots grow)
-		for _, fx in ipairs({ 32, 142, 264, 372 }) do
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawLine(fx, top, fx, top - 6)
-			gfx.drawLine(fx, top - 2, fx + 2, top - 4) -- leaf
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillCircleAtPoint(fx, top - 9, 3)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawCircleAtPoint(fx, top - 9, 3)
-			gfx.fillRect(fx - 1, top - 10, 2, 2) -- center
-		end
-
-		-- Pebbles in the soil: evenly spaced (with a little jitter) in a band near the top and along
-		-- the bottom edge, leaving the middle clear for the white hint text
-		local function pebble(x, y, big)
-			gfx.setColor(gfx.kColorWhite)
-			if big then
-				gfx.fillRect(x, y, 4, 2)
-				gfx.fillRect(x + 1, y - 1, 2, 1)
-			else
-				gfx.fillRect(x, y, 2, 1)
-			end
-		end
-		for i = 0, 17 do
-			pebble(8 + i * 22 + (i * 7) % 9, top + 6 + (i * 5) % 6, i % 3 == 0)
-		end
-		for i = 0, 13 do
-			pebble(16 + i * 28 + (i * 11) % 10, top + 38 + (i * 3) % 4, i % 3 == 1)
-		end
+		drawGrassEdge(top, { 32, 142, 264, 372 }) -- flowers kept clear of where the carrots grow
+		UI.drawGroundPebbles({
+			{ y = top + 6, x0 = 8, spacing = 22, count = 18, bigOffset = 0 },
+			{ y = top + 38, x0 = 16, spacing = 28, count = 14, bigOffset = 1 },
+		})
 	gfx.popContext()
 	return img
 end
@@ -1152,24 +1163,8 @@ local function buildFieldImages()
 			gfx.fillCircleAtPoint(tx, base - r * 2 - 1, r)
 		end
 
-		-- Grass tufts along the ground
-		gfx.setColor(gfx.kColorBlack)
-		for x = 3, W, 17 do
-			gfx.fillTriangle(x, FIELD_GROUND_Y, x + 2, FIELD_GROUND_Y - 4, x + 4, FIELD_GROUND_Y)
-			gfx.fillTriangle(x + 4, FIELD_GROUND_Y, x + 6, FIELD_GROUND_Y - 3, x + 8, FIELD_GROUND_Y)
-		end
-
-		-- A few little flowers
-		for _, fx in ipairs({ 36, 118, 171, 247, 302, 371 }) do
-			local stem = (fx % 3 == 0) and 7 or 5
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawLine(fx, FIELD_GROUND_Y - 1, fx, FIELD_GROUND_Y - stem)
-			gfx.setColor(gfx.kColorWhite)
-			gfx.fillCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
-			gfx.setColor(gfx.kColorBlack)
-			gfx.drawCircleAtPoint(fx, FIELD_GROUND_Y - stem - 2, 2)
-			gfx.drawPixel(fx, FIELD_GROUND_Y - stem - 2)
-		end
+		-- Grass edge and flowers, matching the menu ground
+		drawGrassEdge(FIELD_GROUND_Y, { 36, 118, 171, 247, 302, 371 })
 	gfx.popContext()
 	gfx.setColor(gfx.kColorBlack)
 end

@@ -1306,12 +1306,11 @@ end
 -------------------------------------------------------
 
 -- Cannon positions (6 total: left and right on three levels). y is the cannon's base; the barrel
--- is CANNON_BARREL_HEIGHT above it. Each level's shots fly at body height for a bunny standing
--- there, so they have to be jumped (or dropped) over:
---   ground level: shots at y=205 (bunny standing on the ground)
---   low level:    shots at y=160 (bunny standing on the lowest platforms, tops at 170)
---   middle level: shots at y=110 (bunny standing on the middle platforms, tops at 120)
--- The top platforms (tops at 70) have no cannon lane.
+-- is CANNON_BARREL_HEIGHT above it. Standing on a platform is safe from cannonballs, so:
+--   ground level: shots at y=205 hit a bunny on the ground, and have to be jumped over
+--   low level:    shots at y=160 cross the lowest platforms at body height (tops at 170): they
+--                 catch you jumping up to or dropping off those platforms
+--   middle level: shots at y=110, the same for the middle platforms (tops at 120)
 local CANNON_POSITIONS = {
 	{ x = LEFT_BOUND, y = 205 + CANNON_BARREL_HEIGHT, facing = "right" },
 	{ x = RIGHT_BOUND, y = 205 + CANNON_BARREL_HEIGHT, facing = "left" },
@@ -2468,10 +2467,12 @@ function playdate.update()
 			end
 		end
 
-		-- Check collision with cannon projectiles
+		-- Check collision with cannon projectiles. Standing on a platform makes you safe from them;
+		-- they only hit on the ground or in mid-air.
+		local safeFromCannons = isOnGround and standingPlatform ~= nil
 		for i = #cannonProjectiles, 1, -1 do
 			local projectile = cannonProjectiles[i]
-			if projectile and projectile.sprite then
+			if projectile and projectile.sprite and not safeFromCannons then
 				local projRect = projectileHitRect(projectile)
 				if bunnyRect:intersects(projRect) then
 					-- Leave the projectile in place so it is visible while the bunny falls

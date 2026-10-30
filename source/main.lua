@@ -29,6 +29,25 @@ local function endPause()
 	end
 end
 
+-- === Slow motion (crank or hold B) ===
+-- Hazards run on a "world clock" that advances slower while slow motion is on; the bunny, the run
+-- timer and power-ups stay on real time. Kept in one table (main.lua is near Lua's local limit).
+local slowmo = {
+	SCALE = 0.35, -- world speed while slowed
+	FULL_MS = 3000, -- a full focus meter lasts this long
+	CRANK_THRESHOLD = 2, -- degrees per frame of crank turning that counts as cranking
+	REFILL_CARROT = 0.15, -- focus gained per carrot (white carrots give 3x)
+	worldMs = 0, -- the world clock
+	lastRealMs = 0,
+	scale = 1, -- current world speed (eases toward SCALE or 1)
+	focus = 1, -- meter, 0..1
+	active = false,
+}
+-- The world clock: use for anything hazards do over time (spawns, firing, flashing, falling)
+function slowmo.now()
+	return slowmo.worldMs
+end
+
 function playdate.gameWillPause() beginPause() end
 function playdate.gameWillResume() endPause() end
 function playdate.deviceWillLock() beginPause() end
@@ -321,7 +340,7 @@ local function spawnWhiteCarrot()
 	local carrot = createCarrot(x, y, true)
 	if carrot then
 		whiteCarrot = carrot
-		carrot.spawnTime = nowMs()
+		carrot.spawnTime = slowmo.now()
 	end
 end
 
@@ -332,7 +351,7 @@ local function removeWhiteCarrot()
 		if whiteCarrot.bounceTimer then whiteCarrot.bounceTimer:remove() end
 		whiteCarrot:remove()
 		whiteCarrot = nil
-		lastWhiteCarrotTime = nowMs()
+		lastWhiteCarrotTime = slowmo.now()
 		whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
 	end
 end
@@ -388,7 +407,7 @@ end
 
 math.randomseed(playdate.getSecondsSinceEpoch())
 spawnBlackCarrot()
-lastWhiteCarrotTime = nowMs()
+lastWhiteCarrotTime = slowmo.now()
 whiteCarrotSpawnDelay = 10000 + math.random(5000) -- initial delay 10-15 seconds
 
 -- === Bunny ===
@@ -432,7 +451,7 @@ gfx.sprite.setBackgroundDrawingCallback(function()
 end)
 
 -- === Enemy spawn control ===
-local lastArrowSpawn = nowMs()
+local lastArrowSpawn = 0
 local arrowSpawnInterval = 1500 -- ms (every 1.5s at start)
 
 -- Difficulty progression: arrows come more often as the run goes on
@@ -820,7 +839,7 @@ local function spawnArrowAt(x, vy)
 	a.sprite:add()
 	a.vx = 0
 	a.vy = vy or 2.5 -- same fall speed for all
-	a.startTime = nowMs() -- track when arrow was created
+	a.startTime = slowmo.now() -- track when arrow was created (world clock)
 	a.slideDuration = 1000 -- slide animation takes 1 second
 	a.isSlidingIn = true -- flag to track if arrow is sliding in from top
 	table.insert(arrows, a)
@@ -862,7 +881,7 @@ end
 -------------------------------------------------------
 local function startFlashingEffect(obstacle, sprite)
 	obstacle.isFlashing = true
-	obstacle.flashStartTime = nowMs()
+	obstacle.flashStartTime = slowmo.now()
 	obstacle.flashDuration = 2000 -- 2 seconds
 	obstacle.flashVisible = true
 	
@@ -884,7 +903,7 @@ end
 
 local function updateFlashingEffect(obstacle, sprite)
 	if obstacle.isFlashing then
-		local now = nowMs()
+		local now = slowmo.now()
 		if now - obstacle.flashStartTime >= obstacle.flashDuration then
 			-- Flash complete, make obstacle active
 			obstacle.isFlashing = false
@@ -1037,7 +1056,7 @@ local function createCannon(x, y, facing)
 		x = x,
 		y = y,
 		facing = facing,
-		lastFireTime = nowMs(),
+		lastFireTime = slowmo.now(),
 		isFlashing = false,
 		removed = false
 	}
@@ -1153,7 +1172,7 @@ local function updateSaw(saw)
 	updateFlashingEffect(saw, saw.sprite)
 	
 	-- Always rotate the saw
-	saw.rotation = (saw.rotation + SAW_ROTATION_SPEED * saw.spin) % 360
+	saw.rotation = (saw.rotation + SAW_ROTATION_SPEED * saw.spin * slowmo.scale) % 360
 	saw.sprite:setRotation(saw.rotation)
 	
 	-- Only move if not flashing
@@ -1163,7 +1182,7 @@ local function updateSaw(saw)
 		if saw.state == "ground" then
 			-- Roll along the ground line, half buried
 			saw.y = GROUND_TOP
-			saw.x += saw.direction * SAW_SPEED
+			saw.x += saw.direction * SAW_SPEED * slowmo.scale
 			
 			-- At a corner, climb the wall (half off the side of the screen)
 			if saw.x <= 0 then
@@ -1176,7 +1195,7 @@ local function updateSaw(saw)
 				saw.state = "wallUp"
 			end
 		elseif saw.state == "wallUp" then
-			saw.y -= SAW_SPEED
+			saw.y -= SAW_SPEED * slowmo.scale
 			
 			-- Top of the saw reached the ceiling: turn around
 			if saw.y <= sawRadius then
@@ -1185,7 +1204,7 @@ local function updateSaw(saw)
 				saw.spin = -saw.spin
 			end
 		elseif saw.state == "wallDown" then
-			saw.y += SAW_SPEED
+			saw.y += SAW_SPEED * slowmo.scale
 			
 			-- Back at the corner: roll out across the ground, away from this wall
 			if saw.y >= GROUND_TOP then
@@ -1207,7 +1226,7 @@ local function updateWreckingBall(ball)
 	
 	-- Only rotate if not flashing
 	if not ball.isFlashing then
-		ball.angle += WRECKING_BALL_ROTATION_SPEED
+		ball.angle += WRECKING_BALL_ROTATION_SPEED * slowmo.scale
 		local x = ball.anchorX + math.cos(ball.angle) * WRECKING_BALL_CHAIN_LENGTH
 		local y = ball.anchorY + math.sin(ball.angle) * WRECKING_BALL_CHAIN_LENGTH
 		ball.sprite:moveTo(x, y)
@@ -1222,7 +1241,7 @@ local function updateCannon(cannon)
 	
 	-- Only fire if not flashing
 	if not cannon.isFlashing then
-		local now = nowMs()
+		local now = slowmo.now()
 		if now - cannon.lastFireTime >= CANNON_FIRE_INTERVAL then
 			cannon.lastFireTime = now
 			local direction = (cannon.facing == "right") and 1 or -1
@@ -1243,14 +1262,14 @@ local function updateSpikeBall(spikeBall)
 	updateFlashingEffect(spikeBall, spikeBall.sprite)
 	
 	-- Always rotate the spikeball
-	spikeBall.rotation = (spikeBall.rotation + SPIKE_BALL_ROTATION_SPEED) % 360
+	spikeBall.rotation = (spikeBall.rotation + SPIKE_BALL_ROTATION_SPEED * slowmo.scale) % 360
 	spikeBall.sprite:setRotation(spikeBall.rotation)
 	
 	-- Only move if not flashing
 	if not spikeBall.isFlashing then
 		if spikeBall.type == "vertical" then
 			-- Move vertically, bounce at top/bottom
-			spikeBall.y += spikeBall.vy
+			spikeBall.y += spikeBall.vy * slowmo.scale
 			spikeBall.sprite:moveTo(spikeBall.x, spikeBall.y)
 			
 			if spikeBall.y <= 20 then
@@ -1262,8 +1281,8 @@ local function updateSpikeBall(spikeBall)
 			end
 		else
 			-- Move diagonally, bounce off screen edges
-			spikeBall.x += spikeBall.vx
-			spikeBall.y += spikeBall.vy
+			spikeBall.x += spikeBall.vx * slowmo.scale
+			spikeBall.y += spikeBall.vy * slowmo.scale
 			spikeBall.sprite:moveTo(spikeBall.x, spikeBall.y)
 			
 			-- Bounce off horizontal edges
@@ -1291,7 +1310,7 @@ end
 local function updateCannonProjectile(projectile)
 	if projectile.removed or not projectile.sprite then return end
 	
-	projectile.x += projectile.vx
+	projectile.x += projectile.vx * slowmo.scale
 	projectile.sprite:moveTo(projectile.x, projectile.y)
 	
 	-- Remove if off screen
@@ -1425,7 +1444,7 @@ end
 
 -- Unified obstacle spawn system
 local function trySpawnObstacle()
-	local now = nowMs()
+	local now = slowmo.now()
 	
 	-- Check if it's time to spawn
 	if now - lastObstacleSpawn >= obstacleSpawnInterval then
@@ -1761,7 +1780,7 @@ local function restartGame()
 
 	carrotCount = 0
 	startTimeMs = nowMs()
-	lastArrowSpawn = startTimeMs
+	lastArrowSpawn = slowmo.now()
 	lastObstacleSpawn = 0 -- Reset to trigger immediate spawn
 	obstacleSpawnInterval = 0 -- Will be set on first spawn
 	gameState = "playing"
@@ -1777,8 +1796,12 @@ local function restartGame()
 	setSpawnAvoid(SCREEN_W / 2, GROUND_TOP - 12)
 	setStandingSprite()
 	spawnBlackCarrot()
-	lastWhiteCarrotTime = nowMs()
+	lastWhiteCarrotTime = slowmo.now()
 	whiteCarrotSpawnDelay = 10000 + math.random(5000) -- 10-15 seconds
+	-- Slow motion starts each run with a full meter
+	slowmo.focus = 1
+	slowmo.scale = 1
+	slowmo.active = false
 	-- Reset achievement tracking
 	carrotCollectionTimes = {}
 	resetPowerUps()
@@ -1865,6 +1888,31 @@ function playdate.update()
 	-- Scenery is animated, so have the sprite system redraw the whole background every frame
 	if gameState == "playing" or gameState == "dying" then
 		gfx.sprite.redrawBackground()
+	end
+
+	-- Slow motion: crank (or hold B) while playing, as long as there's focus left.
+	-- The world clock advances by real time times the current world speed.
+	do
+		local realNow = nowMs()
+		local dt = math.max(0, math.min(100, realNow - slowmo.lastRealMs))
+		slowmo.lastRealMs = realNow
+		-- Read the crank every frame (even on menus) so turns made elsewhere don't pile up
+		local cranking = 0
+		if not playdate.isCrankDocked() then
+			cranking = math.abs(playdate.getCrankChange())
+		end
+		local wants = gameState == "playing"
+			and (cranking > slowmo.CRANK_THRESHOLD or playdate.buttonIsPressed(playdate.kButtonB))
+		slowmo.active = wants and slowmo.focus > 0
+		if slowmo.active then
+			slowmo.focus = math.max(0, slowmo.focus - dt / slowmo.FULL_MS)
+		end
+		local target = slowmo.active and slowmo.SCALE or 1
+		if gameState ~= "playing" then target = 1 end
+		slowmo.scale += (target - slowmo.scale) * 0.3 -- ease in and out
+		if gameState == "playing" then
+			slowmo.worldMs += dt * slowmo.scale
+		end
 	end
 
 	-- update timer (elapsed time) regardless of paused/dead for display
@@ -2197,6 +2245,7 @@ function playdate.update()
 					local now = nowMs()
 					if c.isWhite then
 						carrotCount += 3
+						slowmo.focus = math.min(1, slowmo.focus + slowmo.REFILL_CARROT * 3)
 						-- Track 3 carrot collections for white carrot
 						table.insert(carrotCollectionTimes, now)
 						table.insert(carrotCollectionTimes, now)
@@ -2205,6 +2254,7 @@ function playdate.update()
 						removeWhiteCarrot()
 					else
 						carrotCount += 1
+						slowmo.focus = math.min(1, slowmo.focus + slowmo.REFILL_CARROT)
 						-- Track carrot collection timestamp
 						table.insert(carrotCollectionTimes, now)
 						-- Remove black carrot and spawn new one
@@ -2240,6 +2290,7 @@ function playdate.update()
 				-- particles
 				spawnParticles(cx + cw/2, cy + ch/2)
 				carrotCount += 3
+				slowmo.focus = math.min(1, slowmo.focus + slowmo.REFILL_CARROT * 3)
 				
 				-- Track 3 carrot collections for white carrot
 				local now = nowMs()
@@ -2263,7 +2314,7 @@ function playdate.update()
 
 		-- White carrot timeout check (8 seconds)
 		if whiteCarrot and not whiteCarrot.removed then
-			local now = nowMs()
+			local now = slowmo.now()
 			if now - whiteCarrot.spawnTime >= 8000 then
 				removeWhiteCarrot()
 			end
@@ -2271,7 +2322,7 @@ function playdate.update()
 
 		-- White carrot spawn check (10-15 seconds after last one disappeared)
 		if not whiteCarrot then
-			local now = nowMs()
+			local now = slowmo.now()
 			if now - lastWhiteCarrotTime >= whiteCarrotSpawnDelay then
 				spawnWhiteCarrot()
 			end
@@ -2283,8 +2334,8 @@ function playdate.update()
 
 		---------------------------------------------------------------------
 
-		-- spawn arrows over time
-		local now = nowMs()
+		-- spawn arrows over time (world clock)
+		local now = slowmo.now()
 		if now - lastArrowSpawn >= getSpawnInterval() then
 			lastArrowSpawn = now
 			spawnRandomArrow()
@@ -2294,7 +2345,7 @@ function playdate.update()
 		for i = #arrows, 1, -1 do
 			local a = arrows[i]
 			if a and a.sprite then
-				local now = nowMs()
+				local now = slowmo.now()
 				local ax, ay = a.sprite:getPosition()
 				
 				-- First phase: slide in from top (takes 1 second)
@@ -2313,7 +2364,7 @@ function playdate.update()
 					end
 				-- Second phase: falling
 				else
-					a.sprite:moveBy(a.vx, a.vy)
+					a.sprite:moveBy(a.vx * slowmo.scale, a.vy * slowmo.scale)
 					ax, ay = a.sprite:getPosition()
 				end
 				
@@ -2346,7 +2397,7 @@ function playdate.update()
 		---------------------------------------------------------------------
 		if lastObstacleSpawn == 0 then
 			-- Initialize spawn timer and spawn immediately on first frame
-			lastObstacleSpawn = nowMs()
+			lastObstacleSpawn = slowmo.now()
 			obstacleSpawnInterval = 13000 + math.random(4000) -- 13-17 seconds
 			-- Spawn first obstacle immediately
 			local availableTypes = {}
@@ -2585,6 +2636,8 @@ function playdate.update()
 			remainingMs = activePower.untilMs - nowMs(),
 			durationMs = POWERUP_DURATION[activePower.kind],
 		} or nil,
+		slowFocus = slowmo.focus,
+		slowActive = slowmo.active,
 		notification = activeNotification,
 		notificationAge = activeNotification and (nowMs() - activeNotification.startTime) or 0,
 		formatTime = formatTime,

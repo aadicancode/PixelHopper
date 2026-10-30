@@ -676,6 +676,7 @@ local LOADING_TIPS = {
 	"Ran off a ledge? You can still jump for a split second after.",
 	"Hazards flash before they turn dangerous. That's your cue to move!",
 	"Saws ride up the walls and turn back at the ceiling. Mind the corners!",
+	"Turn the crank (or hold B) to slow time. Carrots refill your focus.",
 }
 local currentTip = nil
 local tipsShown = 0
@@ -952,6 +953,40 @@ local function drawHUD(s)
 		gfx.fillRect(x, y + 4, 6, 2)
 		gfx.fillRect(x + 2, y + 2, 2, 6)
 		text(fonts.label, number, x + plusW + gap, y)
+	end
+
+	-- Slow-motion focus meter, top center: a small hourglass and a bar. While slowed, a dotted
+	-- frame runs around the edge of the screen.
+	if s.slowFocus then
+		local mx, my, mw = W / 2 - 34, 8, 60
+		gfx.setColor(gfx.kColorBlack)
+		-- hourglass
+		gfx.fillTriangle(mx, my, mx + 6, my, mx + 3, my + 5)
+		gfx.drawTriangle(mx, my + 10, mx + 6, my + 10, mx + 3, my + 5)
+		gfx.drawLine(mx - 1, my, mx + 7, my)
+		gfx.drawLine(mx - 1, my + 10, mx + 7, my + 10)
+		-- bar
+		local bx = mx + 11
+		gfx.setColor(gfx.kColorWhite)
+		gfx.fillRect(bx, my + 2, mw, 7)
+		gfx.setColor(gfx.kColorBlack)
+		gfx.drawRect(bx, my + 2, mw, 7)
+		local fill = math.floor((mw - 2) * s.slowFocus)
+		if s.slowActive then
+			gfx.fillRect(bx + 1, my + 3, fill, 5)
+		else
+			dither(0.6)
+			gfx.fillRect(bx + 1, my + 3, fill, 5)
+			gfx.setColor(gfx.kColorBlack)
+		end
+	end
+	if s.slowActive then
+		dither(0.5)
+		gfx.fillRect(0, 0, W, 2)
+		gfx.fillRect(0, H - 2, W, 2)
+		gfx.fillRect(0, 0, 2, H)
+		gfx.fillRect(W - 2, 0, 2, H)
+		gfx.setColor(gfx.kColorBlack)
 	end
 
 	-- Active power-up: its icon and a countdown bar under the timer (flashes in the last 2s)

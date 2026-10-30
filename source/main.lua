@@ -208,8 +208,9 @@ local function createCarrot(x, y, isWhite)
 		carrot.flashTimer = playdate.timer.new(200, function()
 			if not carrot or carrot.removed then return end
 			visible = not visible
-			if visible then carrot:setImage(whiteCarrotImg)
-			else carrot:setImage(nil) end
+			-- Hide it with setVisible: setImage(nil) left it with no size, so it couldn't be
+			-- collected during the "off" flashes
+			carrot:setVisible(visible)
 		end)
 		carrot.flashTimer.repeats = true
 	end
@@ -254,7 +255,16 @@ local function isPositionOnPlatform(x, y)
 	return false
 end
 
--- Find a valid spawn position (not on platforms)
+-- Where the bunny is, kept up to date each frame so pickups don't spawn right on top of it
+local spawnAvoidX, spawnAvoidY = SCREEN_W / 2, GROUND_TOP - 12
+local function setSpawnAvoid(x, y)
+	spawnAvoidX, spawnAvoidY = x, y
+end
+
+-- Find a valid spawn position: not on a platform, below the HUD (pickups are drawn with their
+-- bottom at y, and the HUD pills reach y=24), and not right on the bunny
+local SPAWN_MIN_Y = 46
+local SPAWN_AVOID_BUNNY = 50
 local function findValidSpawnPosition()
 	local margin = 20
 	local maxAttempts = 50
@@ -262,9 +272,11 @@ local function findValidSpawnPosition()
 	
 	for i = 1, maxAttempts do
 		x = math.random(margin, SCREEN_W - margin)
-		y = math.random(margin, GROUND_TOP - margin)
+		y = math.random(SPAWN_MIN_Y, GROUND_TOP - margin)
+		local dx, dy = x - spawnAvoidX, y - spawnAvoidY
+		local nearBunny = dx * dx + dy * dy < SPAWN_AVOID_BUNNY * SPAWN_AVOID_BUNNY
 		
-		if not isPositionOnPlatform(x, y) then
+		if not isPositionOnPlatform(x, y) and not nearBunny then
 			return x, y
 		end
 	end
@@ -423,12 +435,11 @@ end)
 local lastArrowSpawn = nowMs()
 local arrowSpawnInterval = 1500 -- ms (every 1.5s at start)
 
--- Difficulty progression (simple): spawn faster over time
+-- Difficulty progression: arrows come more often as the run goes on
 local function getSpawnInterval()
-	-- cap min interval
+	-- Time between arrows: 2.2s at the start, down to 0.9s after about 2 minutes
 	local t = (nowMs() - startTimeMs) / 1000
-	local speedup = math.max(0, math.min(1000, math.floor(t * 40))) -- reduce interval slowly
-	return math.max(500, arrowSpawnInterval - speedup) -- min 500ms
+	return math.max(900, 2200 - t * 11)
 end
 
 -- === Obstacle Speed Variables (configurable) ===
@@ -440,6 +451,7 @@ local SPIKE_BALL_VERTICAL_SPEED = 2.0
 local SPIKE_BALL_DIAGONAL_SPEED = 2.5
 local SPIKE_BALL_ROTATION_SPEED = 4.0 -- degrees per frame
 local CANNON_PROJECTILE_SPEED = 3.0
+local CANNON_BARREL_HEIGHT = 16 -- barrel center above the base of the 24px cannon image
 local CANNON_FIRE_INTERVAL = 2000 -- milliseconds between shots
 
 -- === Player Name ===
@@ -763,6 +775,8 @@ local mainMenuOptions = { "RESTART", "LEADERBOARD", "ACHIEVEMENTS", "CHANGE NAME
 local leaderboardTab = "local" -- "local" | "online"
 
 local returnState = "mainmenu" -- where Back goes from the leaderboard / achievements screens
+local DEAD_INPUT_DELAY_MS = 450 -- ignore buttons briefly on the game-over screen
+local deadSinceMs = 0
 
 local function openLeaderboard()
 	returnState = gameState
@@ -812,13 +826,34 @@ local function spawnArrowAt(x, vy)
 	table.insert(arrows, a)
 end
 
--- spawn a single arrow at a random position
+-- Arrow difficulty over a run: more arrows allowed on screen at once, falling a little faster.
+--   0s: 1 at a time   40s: 2   80s: 3   120s+: 4      fall speed 2.5 -> 3.5 over the first 2 minutes
+local function arrowsAllowed()
+	local t = (nowMs() - startTimeMs) / 1000
+	return math.min(4, 1 + t // 40)
+end
+
+local function arrowFallSpeed()
+	local t = (nowMs() - startTimeMs) / 1000
+	return 2.5 + math.min(1, t / 120)
+end
+
+-- Spawn an arrow at a random x, if fewer than the allowed number are on screen. It won't start
+-- right next to another arrow, so two never fall as one.
 local function spawnRandomArrow()
-	-- Only spawn if there are no arrows currently
-	if #arrows == 0 then
-		local margin = 12
+	if #arrows >= arrowsAllowed() then return end
+	local margin = 12
+	for _ = 1, 10 do
 		local x = math.random(margin, SCREEN_W - margin)
-		spawnArrowAt(x, 2.5)
+		local clear = true
+		for _, a in ipairs(arrows) do
+			local ax = a.sprite:getPosition()
+			if math.abs(ax - x) < 40 then clear = false break end
+		end
+		if clear then
+			spawnArrowAt(x, arrowFallSpeed())
+			return
+		end
 	end
 end
 
@@ -1073,7 +1108,7 @@ end
 -- Create a cannon projectile
 local function createCannonProjectile(x, y, direction)
 	-- direction: 1 for right, -1 for left
-	local projSize = 8
+	local projSize = 12 -- matches images/cannonball.png
 	local img = safeLoad("images/cannonball.png")
 	if not img then
 		-- Placeholder: create a simple projectile image
@@ -1194,7 +1229,7 @@ local function updateCannon(cannon)
 			-- Calculate barrel position: cannon is 24 wide, barrel extends 8 pixels from edge
 			-- Cannon center is at (cannon.x, cannon.y - 8) since it's bottom-aligned
 			local barrelX = cannon.x + (direction * 16)  -- 12 (half width) + 4 (half barrel) = 16
-			local barrelY = cannon.y - 8  -- Middle of cannon (cannon is 16 tall, bottom-aligned)
+			local barrelY = cannon.y - CANNON_BARREL_HEIGHT
 			local projectile = createCannonProjectile(barrelX, barrelY, direction)
 			table.insert(cannonProjectiles, projectile)
 		end
@@ -1270,15 +1305,20 @@ end
 -- === Obstacle Spawn System ===
 -------------------------------------------------------
 
--- Define cannon positions (6 total: 2 per level, left and right)
--- Cannons positioned higher so projectiles pass above platforms
+-- Cannon positions (6 total: left and right on three levels). y is the cannon's base; the barrel
+-- is CANNON_BARREL_HEIGHT above it. Each level's shots fly at body height for a bunny standing
+-- there, so they have to be jumped (or dropped) over:
+--   ground level: shots at y=205 (bunny standing on the ground)
+--   low level:    shots at y=160 (bunny standing on the lowest platforms, tops at 170)
+--   middle level: shots at y=110 (bunny standing on the middle platforms, tops at 120)
+-- The top platforms (tops at 70) have no cannon lane.
 local CANNON_POSITIONS = {
-	{ x = LEFT_BOUND, y = 140, facing = "right" },  -- Ground left (raised from 160)
-	{ x = RIGHT_BOUND, y = 140, facing = "left" },  -- Ground right (raised from 160)
-	{ x = LEFT_BOUND, y = 90, facing = "right" },   -- Middle left (raised from 110)
-	{ x = RIGHT_BOUND, y = 90, facing = "left" },   -- Middle right (raised from 110)
-	{ x = LEFT_BOUND, y = 40, facing = "right" },   -- Top left (raised from 60)
-	{ x = RIGHT_BOUND, y = 40, facing = "left" },   -- Top right (raised from 60)
+	{ x = LEFT_BOUND, y = 205 + CANNON_BARREL_HEIGHT, facing = "right" },
+	{ x = RIGHT_BOUND, y = 205 + CANNON_BARREL_HEIGHT, facing = "left" },
+	{ x = LEFT_BOUND, y = 160 + CANNON_BARREL_HEIGHT, facing = "right" },
+	{ x = RIGHT_BOUND, y = 160 + CANNON_BARREL_HEIGHT, facing = "left" },
+	{ x = LEFT_BOUND, y = 110 + CANNON_BARREL_HEIGHT, facing = "right" },
+	{ x = RIGHT_BOUND, y = 110 + CANNON_BARREL_HEIGHT, facing = "left" },
 }
 
 -- Define spike ball types
@@ -1735,6 +1775,7 @@ local function restartGame()
 	coyoteFrames = 0
 	bunny:setZIndex(0)
 	bunny:moveTo(SCREEN_W / 2, GROUND_TOP)
+	setSpawnAvoid(SCREEN_W / 2, GROUND_TOP - 12)
 	setStandingSprite()
 	spawnBlackCarrot()
 	lastWhiteCarrotTime = nowMs()
@@ -1806,6 +1847,7 @@ local function updateDying()
 	local _, bunnyHeight = bunny:getSize()
 	if by - bunnyHeight > SCREEN_H or nowMs() - deathStartMs >= DEATH_FALL_MAX_MS then
 		gameState = "dead"
+		deadSinceMs = nowMs()
 	end
 end
 
@@ -1869,6 +1911,8 @@ function playdate.update()
 			gameState = "playing"
 			restartGame()
 		end
+	elseif gameState == "dead" and nowMs() - deadSinceMs < DEAD_INPUT_DELAY_MS then
+		-- Just died: ignore buttons for a moment so a jump press can't skip the results
 	elseif gameState == "dead" then
 		-- Left/Right (or Up/Down) to navigate the row of buttons, A to select, B to restart
 		if playdate.buttonJustPressed(playdate.kButtonLeft) or playdate.buttonJustPressed(playdate.kButtonUp) then
@@ -2235,6 +2279,8 @@ function playdate.update()
 		end
 
 		updatePowerUps()
+		local bunnyX, bunnyY = bunny:getPosition()
+		setSpawnAvoid(bunnyX, bunnyY - 12)
 
 		---------------------------------------------------------------------
 
@@ -2423,42 +2469,14 @@ function playdate.update()
 		end
 
 		-- Check collision with cannon projectiles
-		-- Helper function to check if bunny is on a platform (not just ground)
-		local function isBunnyOnPlatform()
-			if not isOnGround then return false end
-			local bx, by = bunny:getPosition()
-			local hitRect = bunny:getCollideRect()
-			local hitH = hitRect.height or 22
-			local bunnyBottomHalf = by - (hitH / 2) + 10
-			
-			-- Check if bunny is on a platform (not the ground)
-			for _, plat in ipairs(platforms) do
-				local px, py = plat:getPosition()
-				local pw, ph = plat:getSize()
-				if px and py and pw and ph then
-					local pLeft, pRight, pTop = px - pw/2, px + pw/2, py - ph/2
-					if bx > pLeft and bx < pRight then
-						local distanceAbove = pTop - bunnyBottomHalf
-						if distanceAbove >= -2 and distanceAbove <= 6 then
-							return true -- Bunny is on this platform
-						end
-					end
-				end
-			end
-			return false -- Bunny is on ground, not a platform
-		end
-		
 		for i = #cannonProjectiles, 1, -1 do
 			local projectile = cannonProjectiles[i]
 			if projectile and projectile.sprite then
-				-- Skip collision if bunny is standing on a platform
-				if not isBunnyOnPlatform() then
-					local projRect = projectileHitRect(projectile)
-					if bunnyRect:intersects(projRect) then
-						-- Leave the projectile in place so it is visible while the bunny falls
-						hitBunny()
-						break
-					end
+				local projRect = projectileHitRect(projectile)
+				if bunnyRect:intersects(projRect) then
+					-- Leave the projectile in place so it is visible while the bunny falls
+					hitBunny()
+					break
 				end
 			end
 		end

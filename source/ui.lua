@@ -676,7 +676,8 @@ local LOADING_TIPS = {
 	"Ran off a ledge? You can still jump for a split second after.",
 	"Hazards flash before they turn dangerous. That's your cue to move!",
 	"Saws ride up the walls and turn back at the ceiling. Mind the corners!",
-	"Turn the crank (or hold B) to slow time. Carrots refill your focus.",
+	"Hold B to slow time. Carrots refill your focus.",
+	"Got hit? Crank backwards to rewind time and find a way out. Every 15 carrots earns another rewind.",
 }
 local currentTip = nil
 local tipsShown = 0
@@ -980,6 +981,17 @@ local function drawHUD(s)
 			gfx.setColor(gfx.kColorBlack)
 		end
 	end
+	-- Rewind charges: a small circular arrow and a count, to the right of the focus meter
+	if s.rewindCharges then
+		local rx, ry = W / 2 + 46, 13
+		gfx.setColor(gfx.kColorBlack)
+		gfx.setLineWidth(2)
+		gfx.drawArc(rx, ry, 5, 60, 330)
+		gfx.setLineWidth(1)
+		gfx.fillTriangle(rx - 1, ry - 8, rx + 4, ry - 5, rx - 1, ry - 2)
+		text(fonts.label, "x" .. s.rewindCharges, rx + 8, ry - 5)
+	end
+
 	if s.slowActive then
 		dither(0.5)
 		gfx.fillRect(0, 0, W, 2)
@@ -1008,6 +1020,64 @@ local function drawHUD(s)
 			gfx.fillRect(barX + 1, barY + 1, math.floor((barW - 2) * p.remainingMs / p.durationMs), barH - 2)
 		end
 	end
+end
+
+-------------------------------------------------------
+-- Rewind overlay: shown while time is frozen after a hit
+-------------------------------------------------------
+local function drawRewind(r)
+	-- Faint scanlines so it's obvious time is stopped
+	dither(0.25)
+	for y = 0, 212, 4 do gfx.drawLine(0, y, W, y) end
+	gfx.setColor(gfx.kColorBlack)
+
+	-- Where the hit happened: a dashed outline
+	local hx, hy = math.floor(r.hitX - 12), math.floor(r.hitY - 26)
+	for i = 0, 26, 4 do
+		gfx.fillRect(hx + i, hy, 2, 1)
+		gfx.fillRect(hx + i, hy + 27, 2, 1)
+	end
+	for i = 0, 26, 4 do
+		gfx.fillRect(hx, hy + i, 1, 2)
+		gfx.fillRect(hx + 24, hy + i, 1, 2)
+	end
+
+	-- Panel with the timeline
+	local px, py, pw, ph = 70, 30, 260, 58
+	panel(px, py, pw, ph)
+	local secondsBack = r.index / r.stepsPerSecond
+	text(fonts.label, "REWIND", px + 10, py + 7)
+	local status
+	if r.index < r.minBack then
+		status = "GO BACK FURTHER"
+	else
+		status = string.format("-%.1fS", secondsBack)
+	end
+	textRight(fonts.label, status, px + pw - 10, py + 7)
+
+	-- Timeline: left end is 3 seconds back, right end is the hit. The part being undone is shaded.
+	local tx, ty, tw = px + 10, py + 24, pw - 20
+	local steps = math.max(1, r.maxBack)
+	local markerX = math.floor(tx + tw - (r.index / steps) * tw)
+	gfx.setColor(gfx.kColorBlack)
+	gfx.drawRect(tx, ty, tw, 8)
+	dither(0.5)
+	gfx.fillRect(markerX, ty + 1, tx + tw - markerX - 1, 6)
+	gfx.setColor(gfx.kColorBlack)
+	-- the minimum: you can't resume to the right of this tick
+	local minX = math.floor(tx + tw - (r.minBack / steps) * tw)
+	gfx.fillRect(minX, ty - 2, 1, 12)
+	-- marker
+	gfx.fillTriangle(markerX - 4, ty - 5, markerX + 4, ty - 5, markerX, ty)
+	gfx.fillRect(markerX - 1, ty, 2, 8)
+
+	-- Decision timer
+	local barW = math.floor((pw - 20) * r.remainingMs / r.decideMs)
+	gfx.fillRect(px + 10, py + 40, barW, 3)
+	text(fonts.label, "REWINDS LEFT " .. r.charges, px + 10, py + 45)
+
+	-- Controls on the ground strip
+	hints({ { "LR", "CRANK BACK" }, { "A", "RESUME" }, { "B", "GIVE UP" } }, W / 2, 221, true)
 end
 
 -------------------------------------------------------
@@ -1375,8 +1445,9 @@ function UI.draw(s)
 	gfx.setColor(gfx.kColorBlack)
 	gfx.setImageDrawMode(gfx.kDrawModeCopy)
 
-	if s.gameState == "playing" or s.gameState == "dying" then
+	if s.gameState == "playing" or s.gameState == "dying" or s.gameState == "rewind" then
 		drawHUD(s)
+		if s.rewind then drawRewind(s.rewind) end
 	else
 		-- Menu screens draw over the frozen game scene
 		gfx.setColor(gfx.kColorWhite)

@@ -29,13 +29,12 @@ local function endPause()
 	end
 end
 
--- === Slow motion (crank or hold B) ===
+-- === Slow motion (hold B) ===
 -- Hazards run on a "world clock" that advances slower while slow motion is on; the bunny, the run
 -- timer and power-ups stay on real time. Kept in one table (main.lua is near Lua's local limit).
 local slowmo = {
 	SCALE = 0.35, -- world speed while slowed
 	FULL_MS = 3000, -- a full focus meter lasts this long
-	CRANK_THRESHOLD = 2, -- degrees per frame of crank turning that counts as cranking
 	REFILL_CARROT = 0.15, -- focus gained per carrot (white carrots give 3x)
 	worldMs = 0, -- the world clock
 	lastRealMs = 0,
@@ -43,6 +42,29 @@ local slowmo = {
 	focus = 1, -- meter, 0..1
 	active = false,
 }
+-- === Crank rewind ===
+-- When the bunny is hit, time freezes. Crank backwards to scrub back up to 3 seconds, then press A
+-- to resume from that moment (B gives up). It has to be at least MIN_BACK steps back, there's a
+-- decision timer, and charges are limited: 1 per run plus 1 per CARROTS_PER_CHARGE carrots.
+-- Everything lives in this table (functions are filled in further down).
+local rewind = {
+	HISTORY = 45, -- snapshots kept, one every 2 frames: 3 seconds
+	STEPS_PER_SECOND = 15,
+	MIN_BACK = 5, -- must go at least this far back (1/3 s) to resume
+	DEGREES_PER_STEP = 10, -- crank degrees per snapshot
+	DECIDE_MS = 6000, -- time to pick a moment before the hit counts
+	CARROTS_PER_CHARGE = 15,
+	MAX_CHARGES = 3,
+	history = {},
+	frame = 0,
+	used = 0,
+	index = 0, -- how many snapshots back from the hit we're showing
+	crankAccum = 0,
+	startedMs = 0,
+	hitX = 0,
+	hitY = 0,
+}
+
 -- The world clock: use for anything hazards do over time (spawns, firing, flashing, falling)
 function slowmo.now()
 	return slowmo.worldMs
@@ -439,13 +461,13 @@ local useHopDown = false  -- Track which walking animation to use (hop or hopdow
 local lastWalkAnimationTime = 0  -- Time when we last switched walking animation
 
 -- === Game state management ===
-local gameState = "mainmenu" -- "mainmenu" | "playing" | "dying" | "dead" | "leaderboard" | "achievements"
+local gameState = "mainmenu" -- "mainmenu" | "playing" | "rewind" | "dying" | "dead" | "leaderboard" | "achievements"
 local startTimeMs = nowMs()
 local elapsedTime = 0.0
 
 -- Scenery (sun/moon, clouds, birds, hills, flowers) drawn as the sprite system's background, behind every sprite
 gfx.sprite.setBackgroundDrawingCallback(function()
-	if gameState == "playing" or gameState == "dying" then
+	if gameState == "playing" or gameState == "dying" or gameState == "rewind" then
 		UI.drawPlayfield(elapsedTime)
 	end
 end)
@@ -1807,6 +1829,7 @@ local function restartGame()
 	resetPowerUps()
 	standingPlatform = nil
 	dropPlatform = nil
+	rewind.reset()
 end
 
 local function die()
@@ -1845,6 +1868,274 @@ local function die()
 	menuSelection = 1
 end
 
+-------------------------------------------------------
+-- === Crank rewind: snapshots, restore, and the rewind state ===
+-------------------------------------------------------
+function rewind.reset()
+	rewind.history = {}
+	rewind.frame = 0
+	rewind.used = 0
+end
+
+function rewind.charges()
+	local earned = 1 + carrotCount // rewind.CARROTS_PER_CHARGE
+	return math.max(0, math.min(rewind.MAX_CHARGES, earned) - rewind.used)
+end
+
+-- Everything that changes during play, as plain data
+function rewind.capture()
+	local snap = {}
+	snap.bunnyX, snap.bunnyY = bunny:getPosition()
+	snap.yVel, snap.xVel, snap.onGround, snap.facing = yVelocity, xVelocity, isOnGround, facing
+	snap.standing, snap.coyote, snap.usedDouble, snap.jumpTime = standingPlatform, coyoteFrames, usedDoubleJump, jumpPressedTime
+	snap.carrotCount = carrotCount
+	snap.collectTimes = { table.unpack(carrotCollectionTimes) }
+	snap.worldMs, snap.focus = slowmo.worldMs, slowmo.focus
+	snap.lastArrowSpawn, snap.lastObstacleSpawn, snap.obstacleInterval = lastArrowSpawn, lastObstacleSpawn, obstacleSpawnInterval
+	snap.lastWhite, snap.whiteDelay = lastWhiteCarrotTime, whiteCarrotSpawnDelay
+
+	snap.carrots = {}
+	for _, c in ipairs(carrots) do
+		local x = c:getPosition()
+		table.insert(snap.carrots, { x = x, baseY = c.baseY })
+	end
+	if whiteCarrot then
+		local x = whiteCarrot:getPosition()
+		snap.white = { x = x, baseY = whiteCarrot.baseY, spawnTime = whiteCarrot.spawnTime }
+	end
+	snap.arrows = {}
+	for _, a in ipairs(arrows) do
+		if a.sprite then
+			local x, y = a.sprite:getPosition()
+			table.insert(snap.arrows, { x = x, y = y, vx = a.vx, vy = a.vy, startTime = a.startTime, sliding = a.isSlidingIn })
+		end
+	end
+	snap.saws = {}
+	for _, o in ipairs(saws) do
+		if not o.removed then
+			table.insert(snap.saws, { x = o.x, y = o.y, state = o.state, dir = o.direction, wall = o.wallSide,
+				rot = o.rotation, spin = o.spin, flashing = o.isFlashing, flashStart = o.flashStartTime })
+		end
+	end
+	snap.balls = {}
+	for _, o in ipairs(wreckingBalls) do
+		if not o.removed then
+			table.insert(snap.balls, { ax = o.anchorX, ay = o.anchorY, angle = o.angle, platform = o.platform,
+				flashing = o.isFlashing, flashStart = o.flashStartTime })
+		end
+	end
+	snap.cannons = {}
+	for _, o in ipairs(cannons) do
+		if not o.removed then
+			table.insert(snap.cannons, { x = o.x, y = o.y, facing = o.facing, lastFire = o.lastFireTime,
+				flashing = o.isFlashing, flashStart = o.flashStartTime })
+		end
+	end
+	snap.spikes = {}
+	for _, o in ipairs(spikeBalls) do
+		if not o.removed then
+			table.insert(snap.spikes, { type = o.type, x = o.x, y = o.y, vx = o.vx, vy = o.vy, rot = o.rotation,
+				flashing = o.isFlashing, flashStart = o.flashStartTime })
+		end
+	end
+	snap.shots = {}
+	for _, o in ipairs(cannonProjectiles) do
+		if not o.removed and o.sprite then
+			table.insert(snap.shots, { x = o.x, y = o.y, vx = o.vx })
+		end
+	end
+	return snap
+end
+
+-- Record a snapshot every other playing frame, keeping the last HISTORY of them
+function rewind.record()
+	rewind.frame += 1
+	if rewind.frame % 2 ~= 0 then return end
+	table.insert(rewind.history, rewind.capture())
+	if #rewind.history > rewind.HISTORY + 1 then table.remove(rewind.history, 1) end
+end
+
+-- Match a recreated obstacle's warning flash to the snapshot
+function rewind.restoreFlash(o, flashing, flashStart)
+	o.isFlashing = flashing
+	o.flashStartTime = flashStart
+	if not flashing then
+		if o.flashTimer then o.flashTimer:remove(); o.flashTimer = nil end
+		o.sprite:setVisible(true)
+	end
+end
+
+function rewind.removeObstacle(o)
+	if o.flashTimer then o.flashTimer:remove() end
+	if o.sprite then o.sprite:remove() end
+end
+
+function rewind.removeCarrotSprite(c)
+	if c.flashTimer then c.flashTimer:remove() end
+	if c.bounceTimer then c.bounceTimer:remove() end
+	c:remove()
+end
+
+-- Put the world back exactly as it was in a snapshot (rebuilds the hazards and carrots)
+function rewind.restore(snap)
+	for i = #arrows, 1, -1 do
+		if arrows[i].sprite then arrows[i].sprite:remove() end
+		arrows[i] = nil
+	end
+	for _, list in ipairs({ saws, wreckingBalls, cannons, spikeBalls }) do
+		for i = #list, 1, -1 do
+			rewind.removeObstacle(list[i])
+			list[i] = nil
+		end
+	end
+	for i = #cannonProjectiles, 1, -1 do
+		if cannonProjectiles[i].sprite then cannonProjectiles[i].sprite:remove() end
+		cannonProjectiles[i] = nil
+	end
+	for i = #carrots, 1, -1 do
+		rewind.removeCarrotSprite(carrots[i])
+		carrots[i] = nil
+	end
+	if whiteCarrot then
+		rewind.removeCarrotSprite(whiteCarrot)
+		whiteCarrot = nil
+	end
+
+	for _, c in ipairs(snap.carrots) do
+		local sprite = createCarrot(c.x, c.baseY, false)
+		if sprite then table.insert(carrots, sprite) end
+	end
+	if snap.white then
+		local sprite = createCarrot(snap.white.x, snap.white.baseY, true)
+		if sprite then
+			sprite.spawnTime = snap.white.spawnTime
+			whiteCarrot = sprite
+		end
+	end
+	for _, d in ipairs(snap.arrows) do
+		spawnArrowAt(d.x, d.vy)
+		local a = arrows[#arrows]
+		a.vx, a.startTime, a.isSlidingIn = d.vx, d.startTime, d.sliding
+		a.sprite:moveTo(d.x, d.y)
+	end
+	for _, d in ipairs(snap.saws) do
+		local o = createSaw(d.x, d.y)
+		o.state, o.direction, o.wallSide, o.rotation, o.spin = d.state, d.dir, d.wall, d.rot, d.spin
+		o.sprite:setRotation(d.rot)
+		rewind.restoreFlash(o, d.flashing, d.flashStart)
+		table.insert(saws, o)
+	end
+	for _, d in ipairs(snap.balls) do
+		local o = createWreckingBall(d.ax, d.ay)
+		o.angle, o.platform = d.angle, d.platform
+		o.sprite:moveTo(d.ax + math.cos(d.angle) * WRECKING_BALL_CHAIN_LENGTH, d.ay + math.sin(d.angle) * WRECKING_BALL_CHAIN_LENGTH)
+		rewind.restoreFlash(o, d.flashing, d.flashStart)
+		table.insert(wreckingBalls, o)
+	end
+	for _, d in ipairs(snap.cannons) do
+		local o = createCannon(d.x, d.y, d.facing)
+		o.lastFireTime = d.lastFire
+		rewind.restoreFlash(o, d.flashing, d.flashStart)
+		table.insert(cannons, o)
+	end
+	for _, d in ipairs(snap.spikes) do
+		local o = createSpikeBall(d.type, d.x, d.y)
+		o.vx, o.vy, o.rotation = d.vx, d.vy, d.rot
+		o.sprite:setRotation(d.rot)
+		rewind.restoreFlash(o, d.flashing, d.flashStart)
+		table.insert(spikeBalls, o)
+	end
+	for _, d in ipairs(snap.shots) do
+		local o = createCannonProjectile(d.x, d.y, (d.vx >= 0) and 1 or -1)
+		o.vx = d.vx
+		table.insert(cannonProjectiles, o)
+	end
+
+	bunny:moveTo(snap.bunnyX, snap.bunnyY)
+	yVelocity, xVelocity, isOnGround, facing = snap.yVel, snap.xVel, snap.onGround, snap.facing
+	standingPlatform, coyoteFrames, usedDoubleJump, jumpPressedTime = snap.standing, snap.coyote, snap.usedDouble, snap.jumpTime
+	carrotCount = snap.carrotCount
+	carrotCollectionTimes = { table.unpack(snap.collectTimes) }
+	slowmo.worldMs, slowmo.focus = snap.worldMs, snap.focus
+	lastArrowSpawn, lastObstacleSpawn, obstacleSpawnInterval = snap.lastArrowSpawn, snap.lastObstacleSpawn, snap.obstacleInterval
+	lastWhiteCarrotTime, whiteCarrotSpawnDelay = snap.lastWhite, snap.whiteDelay
+	if isOnGround then setStandingSprite() elseif yVelocity < 0 then setHopSprite() else setFallSprite() end
+end
+
+-- Called when a hit would end the run: freeze time and start rewinding, if a rewind is available
+function rewind.tryStart()
+	if rewind.charges() <= 0 or #rewind.history < rewind.MIN_BACK + 1 then return false end
+	table.insert(rewind.history, rewind.capture()) -- the moment of the hit
+	rewind.index = 0
+	rewind.crankAccum = 0
+	rewind.hitX, rewind.hitY = bunny:getPosition()
+	rewind.startedMs = playdate.getCurrentTimeMilliseconds()
+	playdate.getCrankChange() -- ignore any turning done before now
+	beginPause() -- real-time timers (run clock, power-ups) don't run while deciding
+	gameState = "rewind"
+	return true
+end
+
+function rewind.giveUp()
+	rewind.restore(rewind.history[#rewind.history]) -- back to the moment of the hit
+	endPause()
+	gameState = "playing"
+	die()
+end
+
+-- Each frame while rewinding: scrub with the crank (or Left/Right), A resumes, B gives up
+function rewind.update()
+	local n = #rewind.history
+	if not playdate.isCrankDocked() then
+		rewind.crankAccum += playdate.getCrankChange()
+	end
+	local index = rewind.index
+	while rewind.crankAccum <= -rewind.DEGREES_PER_STEP do
+		index += 1 -- counter-clockwise goes back in time
+		rewind.crankAccum += rewind.DEGREES_PER_STEP
+	end
+	while rewind.crankAccum >= rewind.DEGREES_PER_STEP do
+		index -= 1
+		rewind.crankAccum -= rewind.DEGREES_PER_STEP
+	end
+	if playdate.buttonJustPressed(playdate.kButtonLeft) then index += 1 end
+	if playdate.buttonJustPressed(playdate.kButtonRight) then index -= 1 end
+	index = math.max(0, math.min(n - 1, index))
+	if index ~= rewind.index then
+		rewind.index = index
+		rewind.restore(rewind.history[n - index])
+	end
+
+	local elapsed = playdate.getCurrentTimeMilliseconds() - rewind.startedMs
+	if playdate.buttonJustPressed(playdate.kButtonA) and rewind.index >= rewind.MIN_BACK then
+		-- Resume from here; the future we rewound past is forgotten
+		for i = n, n - rewind.index + 1, -1 do rewind.history[i] = nil end
+		rewind.used += 1
+		endPause()
+		slowmo.lastRealMs = nowMs()
+		slowmo.scale = slowmo.SCALE -- ease back in from slow motion
+		gameState = "playing"
+	elseif playdate.buttonJustPressed(playdate.kButtonB) or elapsed >= rewind.DECIDE_MS then
+		rewind.giveUp()
+	end
+end
+
+-- What the rewind overlay needs to draw
+function rewind.uiState()
+	if gameState ~= "rewind" then return nil end
+	return {
+		index = rewind.index,
+		maxBack = #rewind.history - 1,
+		minBack = rewind.MIN_BACK,
+		stepsPerSecond = rewind.STEPS_PER_SECOND,
+		remainingMs = math.max(0, rewind.DECIDE_MS - (playdate.getCurrentTimeMilliseconds() - rewind.startedMs)),
+		decideMs = rewind.DECIDE_MS,
+		charges = rewind.charges(),
+		hitX = rewind.hitX,
+		hitY = rewind.hitY,
+	}
+end
+
 -- A hazard touched the bunny. A shield absorbs the hit (followed by a short blink of
 -- invincibility so you can get clear); otherwise it's game over.
 local function hitBunny()
@@ -1858,6 +2149,7 @@ local function hitBunny()
 		spawnParticles(bx + bw / 2, by + bh / 2)
 		return
 	end
+	if rewind.tryStart() then return end
 	die()
 end
 
@@ -1886,23 +2178,17 @@ function playdate.update()
 	gfx.clear(gfx.kColorWhite)
 
 	-- Scenery is animated, so have the sprite system redraw the whole background every frame
-	if gameState == "playing" or gameState == "dying" then
+	if gameState == "playing" or gameState == "dying" or gameState == "rewind" then
 		gfx.sprite.redrawBackground()
 	end
 
-	-- Slow motion: crank (or hold B) while playing, as long as there's focus left.
+	-- Slow motion: hold B while playing, as long as there's focus left.
 	-- The world clock advances by real time times the current world speed.
 	do
 		local realNow = nowMs()
 		local dt = math.max(0, math.min(100, realNow - slowmo.lastRealMs))
 		slowmo.lastRealMs = realNow
-		-- Read the crank every frame (even on menus) so turns made elsewhere don't pile up
-		local cranking = 0
-		if not playdate.isCrankDocked() then
-			cranking = math.abs(playdate.getCrankChange())
-		end
-		local wants = gameState == "playing"
-			and (cranking > slowmo.CRANK_THRESHOLD or playdate.buttonIsPressed(playdate.kButtonB))
+		local wants = gameState == "playing" and playdate.buttonIsPressed(playdate.kButtonB)
 		slowmo.active = wants and slowmo.focus > 0
 		if slowmo.active then
 			slowmo.focus = math.max(0, slowmo.focus - dt / slowmo.FULL_MS)
@@ -2011,6 +2297,8 @@ function playdate.update()
 		end
 	elseif gameState == "dying" then
 		updateDying()
+	elseif gameState == "rewind" then
+		rewind.update()
 	else -- playing
 		-- movement with acceleration/deceleration
 		local moved = false
@@ -2532,6 +2820,7 @@ function playdate.update()
 				end
 			end
 		end
+		if gameState == "playing" then rewind.record() end
 	end -- end playing-block
 
 	-- Update particles every frame
@@ -2542,7 +2831,7 @@ function playdate.update()
 	end
 
 	-- Control bunny visibility based on game state
-	local inGame = gameState == "playing" or gameState == "dying"
+	local inGame = gameState == "playing" or gameState == "dying" or gameState == "rewind"
 	bunny:setVisible(inGame)
 	if gameState == "playing" and nowMs() < invincibleUntilMs then
 		bunny:setVisible((nowMs() // 80) % 2 == 0) -- blink after the shield takes a hit
@@ -2637,6 +2926,8 @@ function playdate.update()
 			durationMs = POWERUP_DURATION[activePower.kind],
 		} or nil,
 		slowFocus = slowmo.focus,
+		rewind = rewind.uiState(),
+		rewindCharges = (gameState == "playing" or gameState == "rewind") and rewind.charges() or nil,
 		slowActive = slowmo.active,
 		notification = activeNotification,
 		notificationAge = activeNotification and (nowMs() - activeNotification.startTime) or 0,

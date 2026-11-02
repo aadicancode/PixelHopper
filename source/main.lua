@@ -63,6 +63,13 @@ local rewind = {
 	startedMs = 0,
 	hitX = 0,
 	hitY = 0,
+	-- animation
+	FLASH_FRAMES = 4, -- inverted "tape stop" flash when the hit freezes time
+	introFrames = 0,
+	autoSteps = 0, -- steps still to rewind automatically right after the hit
+	movedMs = -10000, -- when the scrub position last changed (drives the VHS effects)
+	moveDir = -1, -- -1 rewinding, 1 scrubbing forward
+	resumedMs = -10000, -- when play resumed (drives the "play" flash)
 }
 
 -- The world clock: use for anything hazards do over time (spawns, firing, flashing, falling)
@@ -2070,6 +2077,9 @@ function rewind.tryStart()
 	rewind.crankAccum = 0
 	rewind.hitX, rewind.hitY = bunny:getPosition()
 	rewind.startedMs = playdate.getCurrentTimeMilliseconds()
+	rewind.introFrames = rewind.FLASH_FRAMES
+	rewind.autoSteps = rewind.MIN_BACK -- everything visibly runs backwards to the earliest allowed moment
+	playdate.display.setInverted(true)
 	playdate.getCrankChange() -- ignore any turning done before now
 	beginPause() -- real-time timers (run clock, power-ups) don't run while deciding
 	gameState = "rewind"
@@ -2077,6 +2087,7 @@ function rewind.tryStart()
 end
 
 function rewind.giveUp()
+	playdate.display.setInverted(false)
 	rewind.restore(rewind.history[#rewind.history]) -- back to the moment of the hit
 	endPause()
 	gameState = "playing"
@@ -2086,6 +2097,28 @@ end
 -- Each frame while rewinding: scrub with the crank (or Left/Right), A resumes, B gives up
 function rewind.update()
 	local n = #rewind.history
+
+	-- The hit: a brief inverted flash with everything frozen
+	if rewind.introFrames > 0 then
+		rewind.introFrames -= 1
+		if rewind.introFrames == 0 then playdate.display.setInverted(false) end
+		playdate.getCrankChange()
+		return
+	end
+
+	-- Then everything runs backwards on its own to the earliest moment you're allowed to resume
+	if rewind.autoSteps > 0 then
+		rewind.autoSteps -= 1
+		playdate.getCrankChange()
+		local index = math.min(n - 1, rewind.index + 1)
+		if index ~= rewind.index then
+			rewind.index = index
+			rewind.movedMs, rewind.moveDir = playdate.getCurrentTimeMilliseconds(), -1
+			rewind.restore(rewind.history[n - index])
+		end
+		return
+	end
+
 	if not playdate.isCrankDocked() then
 		rewind.crankAccum += playdate.getCrankChange()
 	end
@@ -2102,6 +2135,8 @@ function rewind.update()
 	if playdate.buttonJustPressed(playdate.kButtonRight) then index -= 1 end
 	index = math.max(0, math.min(n - 1, index))
 	if index ~= rewind.index then
+		rewind.movedMs = playdate.getCurrentTimeMilliseconds()
+		rewind.moveDir = (index > rewind.index) and -1 or 1
 		rewind.index = index
 		rewind.restore(rewind.history[n - index])
 	end
@@ -2111,6 +2146,8 @@ function rewind.update()
 		-- Resume from here; the future we rewound past is forgotten
 		for i = n, n - rewind.index + 1, -1 do rewind.history[i] = nil end
 		rewind.used += 1
+		rewind.resumedMs = playdate.getCurrentTimeMilliseconds()
+		playdate.display.setInverted(false)
 		endPause()
 		slowmo.lastRealMs = nowMs()
 		slowmo.scale = slowmo.SCALE -- ease back in from slow motion
@@ -2123,7 +2160,19 @@ end
 -- What the rewind overlay needs to draw
 function rewind.uiState()
 	if gameState ~= "rewind" then return nil end
+	local n = #rewind.history
+	-- Ghosts of the bunny where it was a moment "later": the path being undone
+	local trail = {}
+	for k = 1, 4 do
+		local snap = rewind.history[n - rewind.index + k * 2]
+		if snap then table.insert(trail, { x = snap.bunnyX, y = snap.bunnyY }) end
+	end
+	local now = playdate.getCurrentTimeMilliseconds()
 	return {
+		moving = now - rewind.movedMs < 220,
+		moveDir = rewind.moveDir,
+		trail = trail,
+		intro = rewind.introFrames > 0,
 		index = rewind.index,
 		maxBack = #rewind.history - 1,
 		minBack = rewind.MIN_BACK,
@@ -2837,8 +2886,11 @@ function playdate.update()
 		bunny:setVisible((nowMs() // 80) % 2 == 0) -- blink after the shield takes a hit
 	end
 
-	-- Update sprites & timers
+	-- Update sprites & timers. While rewinding and moving, the world judders like a VHS tape.
+	local judder = gameState == "rewind" and playdate.getCurrentTimeMilliseconds() - rewind.movedMs < 220
+	if judder then gfx.setDrawOffset(math.random(-2, 2), 0) end
 	gfx.sprite.update()
+	if judder then gfx.setDrawOffset(0, 0) end
 	playdate.timer.updateTimers()
 
 	-- Shield power-up: a ring of dots circling the bunny
@@ -2927,6 +2979,7 @@ function playdate.update()
 		} or nil,
 		slowFocus = slowmo.focus,
 		rewind = rewind.uiState(),
+		rewindPlayAge = (gameState == "playing") and (playdate.getCurrentTimeMilliseconds() - rewind.resumedMs) or nil,
 		rewindCharges = (gameState == "playing" or gameState == "rewind") and rewind.charges() or nil,
 		slowActive = slowmo.active,
 		notification = activeNotification,

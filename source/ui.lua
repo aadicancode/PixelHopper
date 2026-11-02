@@ -1025,11 +1025,56 @@ end
 -------------------------------------------------------
 -- Rewind overlay: shown while time is frozen after a hit
 -------------------------------------------------------
-local function drawRewind(r)
+-- Big double triangle: rewind (dir -1) or fast-forward (dir 1)
+local function tapeArrows(cx, cy, size, dir)
+	gfx.setColor(gfx.kColorBlack)
+	for k = 0, 1 do
+		local x = cx + (k - 0.5) * size * dir
+		if dir < 0 then
+			gfx.fillTriangle(x + size / 2, cy - size / 2, x + size / 2, cy + size / 2, x - size / 2, cy)
+		else
+			gfx.fillTriangle(x - size / 2, cy - size / 2, x - size / 2, cy + size / 2, x + size / 2, cy)
+		end
+	end
+end
+
+local function drawRewind(r, images)
+	if r.intro then return end -- the inverted "tape stop" flash: just the frozen frame
+
 	-- Faint scanlines so it's obvious time is stopped
 	dither(0.25)
 	for y = 0, 212, 4 do gfx.drawLine(0, y, W, y) end
 	gfx.setColor(gfx.kColorBlack)
+
+	-- Ghosts of the bunny along the path being undone
+	if images.bunny then
+		for i, p in ipairs(r.trail) do
+			images.bunny:drawFaded(math.floor(p.x - 10), math.floor(p.y - 24), 0.55 - i * 0.12, gfx.image.kDitherTypeBayer4x4)
+		end
+	end
+
+	-- While the tape is moving: a rolling tracking band, and a big flashing rewind symbol
+	if r.moving then
+		local t = now()
+		local bandY = math.floor((t * 0.35) % 230)
+		dither(0.5)
+		gfx.fillRect(0, bandY, W, 5)
+		gfx.setColor(gfx.kColorWhite)
+		for i = 0, 6 do
+			local sx = (i * 61 + t // 40) % W
+			gfx.fillRect(sx, bandY + 1 + (i % 3), 18 + (i * 7) % 20, 1)
+		end
+		gfx.setColor(gfx.kColorBlack)
+		if (t // 160) % 2 == 0 then
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillRoundRect(W / 2 - 30, 112, 60, 36, 8)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.setLineWidth(2)
+			gfx.drawRoundRect(W / 2 - 30, 112, 60, 36, 8)
+			gfx.setLineWidth(1)
+			tapeArrows(W / 2, 130, 18, r.moveDir)
+		end
+	end
 
 	-- Where the hit happened: a dashed outline
 	local hx, hy = math.floor(r.hitX - 12), math.floor(r.hitY - 26)
@@ -1046,7 +1091,8 @@ local function drawRewind(r)
 	local px, py, pw, ph = 70, 30, 260, 58
 	panel(px, py, pw, ph)
 	local secondsBack = r.index / r.stepsPerSecond
-	text(fonts.label, "REWIND", px + 10, py + 7)
+	tapeArrows(px + 18, py + 12, 8, -1)
+	text(fonts.label, "REWIND", px + 30, py + 7)
 	local status
 	if r.index < r.minBack then
 		status = "GO BACK FURTHER"
@@ -1447,7 +1493,17 @@ function UI.draw(s)
 
 	if s.gameState == "playing" or s.gameState == "dying" or s.gameState == "rewind" then
 		drawHUD(s)
-		if s.rewind then drawRewind(s.rewind) end
+		if s.rewind then drawRewind(s.rewind, s.images) end
+		-- Just resumed: a flashing "play" symbol
+		if s.rewindPlayAge and s.rewindPlayAge < 700 and (s.rewindPlayAge // 120) % 2 == 0 then
+			gfx.setColor(gfx.kColorWhite)
+			gfx.fillRoundRect(W / 2 - 22, 112, 44, 36, 8)
+			gfx.setColor(gfx.kColorBlack)
+			gfx.setLineWidth(2)
+			gfx.drawRoundRect(W / 2 - 22, 112, 44, 36, 8)
+			gfx.setLineWidth(1)
+			gfx.fillTriangle(W / 2 - 7, 120, W / 2 - 7, 140, W / 2 + 10, 130)
+		end
 	else
 		-- Menu screens draw over the frozen game scene
 		gfx.setColor(gfx.kColorWhite)

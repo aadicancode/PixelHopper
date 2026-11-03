@@ -328,9 +328,6 @@ end
 function H.createCannonProjectile(x, y, direction)
 	local sprite = gfx.sprite.new(cannonballImg)
 	sprite:setCenter(0.5, 0.5)
-	local size = cannonballImg:getSize()
-	local collisionSize = size * 0.8 -- slightly smaller than the art
-	sprite:setCollideRect(-collisionSize / 2, -collisionSize / 2, collisionSize, collisionSize)
 	sprite:moveTo(x, y)
 	sprite:add()
 
@@ -600,10 +597,15 @@ local function arrowHitRect(a)
 	return playdate.geometry.rect.new(a.sprite:getBounds())
 end
 
-local function projectileHitRect(projectile)
-	local r = projectile.sprite:getCollideRect()
-	local x, y = projectile.sprite:getBounds()
-	return playdate.geometry.rect.new(x + r.x, y + r.y, r.width, r.height)
+-- Cannonballs are round: hit only when the circle of the art touches the rect, not its square corners
+local CANNONBALL_RADIUS <const> = cannonballImg:getSize() / 2
+
+local function projectileHits(projectile, rect)
+	local cx, cy = projectile.sprite:getPosition()
+	local nearestX = math.max(rect.x, math.min(cx, rect.x + rect.width))
+	local nearestY = math.max(rect.y, math.min(cy, rect.y + rect.height))
+	local dx, dy = cx - nearestX, cy - nearestY
+	return dx * dx + dy * dy < CANNONBALL_RADIUS * CANNONBALL_RADIUS
 end
 
 -- Does anything dangerous overlap the bunny's hurtbox? Arrows only hurt once they're falling, and
@@ -624,7 +626,7 @@ function H.checkHits(bunnyRect, cannonSafe)
 	end
 	if not cannonSafe then
 		for _, o in ipairs(projectiles) do
-			if o.sprite and not o.removed and bunnyRect:intersects(projectileHitRect(o)) then return true end
+			if o.sprite and not o.removed and projectileHits(o, bunnyRect) then return true end
 		end
 	end
 	return false
